@@ -72,8 +72,8 @@ The project has been enhanced with a robust fallback system:
 
 ## Algorithms Implemented
 1. **HP-INV Solver**: Enhanced iterative refinement loop with relaxation factors and convergence monitoring
-2. **Block HP-INV**: Scalability algorithm for large matrices using BlockAMC approach
-3. **BlockAMC Inversion**: Full implementation of BlockAMC algorithm with recursive block diagonal inversion
+2. **Block HP-INV**: Scalability algorithm for large matrices using BlockAMC approach (current implementation shows areas for improvement in accuracy)
+3. **BlockAMC Inversion**: Full implementation of BlockAMC algorithm with recursive block diagonal inversion (current implementation shows areas for improvement in accuracy)
 4. **Recursive Block Inversion**: Advanced recursive implementation of block matrix inversion
 5. **Adaptive HP-INV**: Dynamic precision adjustment based on convergence behavior
 6. **RRAM Model**: Stochastic RRAM models with device variability, stuck faults, line resistance, temperature effects and time-dependent drift
@@ -119,12 +119,21 @@ The project has been thoroughly tested with the following procedures:
 - All HP-INV implementations (standard, block, adaptive) tested for functionality
 - Performance benchmarks run to verify CPU fallback efficiency
 - Import functionality tested to ensure no AVX-related errors on startup
+- Comprehensive end-to-end validation with `comprehensive_end_to_end_test.py`
 
 ### Hardware Compatibility Testing
 - Tested import of all modules without triggering JAX AVX errors
 - Verified CPU fallbacks work correctly when GPU acceleration unavailable
 - Confirmed all core algorithms maintain precision on CPU-only systems
 - Validated that GPU-accelerated functions can be called safely with fallbacks
+
+### Testing Approach
+- Unit tests using pytest for individual components
+- Integration tests for system-level validation
+- Comprehensive end-to-end tests with `comprehensive_end_to_end_test.py`
+- Property-based testing with hypothesis
+- Monte Carlo stress tests for reliability evaluation
+- Target ≥90% coverage on critical solvers
 
 ## Development Guidelines
 - Follows PEP 8 with 4-space indentation

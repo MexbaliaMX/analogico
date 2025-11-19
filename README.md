@@ -107,9 +107,29 @@ print(f'Solution computed with {iterations} iterations')
 ### Algorithms Implemented:
 
 1. **HP-INV Solver**: Enhanced iterative refinement loop with relaxation factors and convergence monitoring
-2. **Block HP-INV**: Scalability algorithm for large matrices using BlockAMC approach
+2. **Block HP-INV**: Scalability algorithm for large matrices using BlockAMC approach (current implementation shows areas for improvement in accuracy)
 3. **RRAM Model**: Stochastic RRAM models with device variability, stuck faults, line resistance, temperature effects and time-dependent drift
 4. **GPU Acceleration**: Multi-backend support with JAX, CuPy, PyTorch and CPU fallbacks
+
+## Testing
+
+The project includes comprehensive testing at multiple levels:
+
+- **Unit tests**: Using pytest for individual components
+- **Integration tests**: For system-level validation
+- **End-to-End tests**: Comprehensive validation with `comprehensive_end_to_end_test.py`
+- **GPU validation**: Specialized tests for GPU acceleration with CPU fallbacks
+- **Property-based tests**: Using hypothesis for robust validation
+- **Stress tests**: Monte Carlo tests for reliability evaluation
+
+## Algorithm Selection Guidelines
+
+Based on testing results:
+
+- **HP-INV Solver**: Recommended for most applications, provides good accuracy and convergence
+- **Adaptive HP-INV**: Best for problems with variable precision requirements
+- **Recursive Block Inversion**: Good for large matrices when block algorithms are preferred
+- **Block HP-INV & BlockAMC**: Available but current implementations may show reduced accuracy; suitable for experimental use or when accuracy requirements are less stringent
 
 ## Performance
 
