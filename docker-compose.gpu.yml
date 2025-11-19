@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  analogico-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: analogico-gpu
+    runtime: nvidia  # Required for GPU access
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+      - CUDA_HOME=/usr/local/cuda
+    volumes:
+      - .:/app  # Mount the current directory to /app in the container
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw  # For GUI applications (optional)
+    command: bash  # Default command is bash for interactive use
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    stdin_open: true  # Keep STDIN open for interactive use
+    tty: true         # Allocate a pseudo-TTY
+    working_dir: /app
+
+  analogico-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: analogico-gpu-test
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - .:/app
+    command: python /app/gpu_end_to_end_test.py  # Run the GPU validation test
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

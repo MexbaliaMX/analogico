@@ -1,0 +1,76 @@
+# Dockerfile for Analogico Project with GPU Support
+#
+# This Dockerfile sets up the Analogico project environment with GPU acceleration
+# using CUDA and JAX. It includes all necessary dependencies for running
+# HP-INV algorithms with GPU acceleration.
+
+# Use NVIDIA's CUDA container with Python 3.10 and Ubuntu 20.04 as base
+FROM nvidia/cuda:11.8-devel-ubuntu20.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Install Python 3.10 and other system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
+    python3-setuptools \
+    git \
+    curl \
+    wget \
+    vim \
+    build-essential \
+    pkg-config \
+    libopenblas-dev \
+    liblapack-dev \
+    gfortran \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.10 /usr/bin/python \
+    && ln -s /usr/bin/pip3 /usr/bin/pip
+
+# Upgrade pip to the latest version
+RUN pip install --upgrade pip setuptools wheel
+
+# Install core dependencies
+RUN pip install numpy==1.26.0 scipy matplotlib invoke
+
+# Install JAX with CUDA support
+# This version is compatible with CUDA 11.8
+RUN pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+# Install remaining dependencies
+RUN pip install jaxlib numba
+
+# Install Poetry for dependency management
+RUN pip install poetry==1.8.2
+
+# Create and set working directory
+WORKDIR /app
+
+# Copy the project files
+COPY . /app
+
+# Set up Poetry configuration
+RUN poetry config virtualenvs.create false
+
+# Install project dependencies using Poetry
+RUN if [ -f "pyproject.toml" ]; then \
+        poetry install --no-root --no-dev; \
+    fi
+
+# Create a Python test script to verify GPU availability
+RUN echo "import jax\nprint(f'JAX version: {jax.__version__}')\nprint(f'JAX devices: {jax.devices()}')\nprint(f'GPU devices: {[d for d in jax.devices() if d.platform == \"gpu\"]}')\n" > /app/check_gpu.py
+
+# Create a simple test to validate the environment
+RUN echo "import numpy as np\nprint('NumPy version:', np.__version__)\n\ntry:\n    import jax\n    print('JAX version:', jax.__version__)\n    print('JAX devices:', jax.devices())\n    print('JAX backend:', jax.default_backend())\n    \n    # Test basic JAX operation\n    import jax.numpy as jnp\n    x = jnp.array([1.0, 2.0, 3.0])\n    y = jnp.array([4.0, 5.0, 6.0])\n    z = jnp.dot(x, y)\n    print(f'JAX dot product: {z}')\n    print('✓ JAX is working correctly')\nexcept Exception as e:\n    print(f'JAX error: {e}')\n    \ntry:\n    import matplotlib\n    print('Matplotlib version:', matplotlib.__version__)\n    print('✓ Matplotlib is working correctly')\nexcept Exception as e:\n    print(f'Matplotlib error: {e}')\n    \ntry:\n    import scipy\n    print('SciPy version:', scipy.__version__)\n    print('✓ SciPy is working correctly')\nexcept Exception as e:\n    print(f'SciPy error: {e}')\n    \ntry:\n    import numba\n    print('Numba version:', numba.__version__)\n    print('✓ Numba is working correctly')\nexcept Exception as e:\n    print(f'Numba error: {e}')\n" > /app/validate_environment.py
+
+# Expose port for potential web interfaces
+EXPOSE 8888
+
+# Set up a default command to verify the environment
+CMD ["python", "/app/validate_environment.py"]

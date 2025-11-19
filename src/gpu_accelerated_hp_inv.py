@@ -9,34 +9,44 @@ import numpy as onp  # Use original numpy for fallback
 import warnings
 from typing import Optional, Tuple, Dict, Any, Callable
 
-# Try to import JAX for GPU acceleration
-try:
-    import jax
-    import jax.numpy as jnp
-    from jax import jit, vmap, grad, value_and_grad
-    from jax.scipy.linalg import inv as jax_inv
-    JAX_AVAILABLE = True
-except ImportError:
-    JAX_AVAILABLE = False
-    warnings.warn("JAX not available, GPU acceleration disabled")
-    jnp = onp  # Fallback to numpy
+# Defer JAX import to function level to avoid AVX issues during import
+JAX_AVAILABLE = None  # Will be set when import is attempted
+jnp = onp  # Default to numpy
 
 
 def gpu_available() -> bool:
     """Check if GPU acceleration is available."""
+    global JAX_AVAILABLE
+    if JAX_AVAILABLE is None:
+        try:
+            import jax
+            JAX_AVAILABLE = True
+        except (ImportError, RuntimeError):
+            JAX_AVAILABLE = False
     return JAX_AVAILABLE
 
 
 def get_array_module(use_gpu: bool = True):
     """
     Get the appropriate array module (numpy or jax.numpy) based on availability.
-    
+
     Args:
         use_gpu: Whether to try to use GPU acceleration
-        
+
     Returns:
         Array module (numpy or jax.numpy)
     """
+    global JAX_AVAILABLE, jnp
+    if JAX_AVAILABLE is None:
+        try:
+            import jax
+            import jax.numpy as jnp_local
+            JAX_AVAILABLE = True
+            jnp = jnp_local
+        except (ImportError, RuntimeError):
+            JAX_AVAILABLE = False
+            jnp = onp  # Fallback to numpy
+
     if use_gpu and JAX_AVAILABLE:
         return jnp
     else:
@@ -44,18 +54,18 @@ def get_array_module(use_gpu: bool = True):
 
 
 def gpu_hp_inv(
-    G: onp.ndarray, 
-    b: onp.ndarray, 
-    bits: int = 3, 
+    G: onp.ndarray,
+    b: onp.ndarray,
+    bits: int = 3,
     lp_noise_std: float = 0.01,
-    max_iter: int = 10, 
+    max_iter: int = 10,
     tol: float = 1e-6,
     relaxation_factor: float = 1.0,
     use_gpu: bool = True
 ) -> Tuple[onp.ndarray, int, Dict[str, Any]]:
     """
     GPU-accelerated HP-INV iterative refinement for solving G x = b.
-    
+
     Args:
         G: Conductance matrix (with variability)
         b: Right-hand side vector
@@ -69,24 +79,45 @@ def gpu_hp_inv(
     Returns:
         Tuple of (solution x, iterations taken, convergence info dict)
     """
+    # Check JAX availability
+    global JAX_AVAILABLE
+    if JAX_AVAILABLE is None:
+        try:
+            import jax
+            import jax.numpy as jnp_local
+            from jax import jit as jit_local
+            from jax.scipy.linalg import inv as jax_inv_local
+            JAX_AVAILABLE = True
+        except (ImportError, RuntimeError):
+            JAX_AVAILABLE = False
+
     if not JAX_AVAILABLE or not use_gpu:
         # Fall back to CPU implementation
         return _cpu_hp_inv(G, b, bits, lp_noise_std, max_iter, tol, relaxation_factor)
-    
+
+    try:
+        import jax
+        import jax.numpy as jnp_local
+        from jax import jit
+        from jax.scipy.linalg import inv as jax_inv
+    except (ImportError, RuntimeError):
+        # If JAX import fails at runtime, fall back to CPU
+        return _cpu_hp_inv(G, b, bits, lp_noise_std, max_iter, tol, relaxation_factor)
+
     # Convert to JAX arrays
-    G_jax = jnp.array(G)
-    b_jax = jnp.array(b)
-    
+    G_jax = jnp_local.array(G)
+    b_jax = jnp_local.array(b)
+
     def quantize(matrix, bits):
         """Quantize matrix to given bit precision."""
-        if matrix.size == 0 or jnp.all(matrix == 0):
+        if matrix.size == 0 or jnp_local.all(matrix == 0):
             return matrix
-        max_val = jnp.max(jnp.abs(matrix))
+        max_val = jnp_local.max(jnp_local.abs(matrix))
         levels = 2**bits - 1
         if max_val == 0:
             return matrix
         scale = levels / max_val
-        quantized = jnp.round(matrix * scale) / scale
+        quantized = jnp_local.round(matrix * scale) / scale
         return quantized
 
     # LP-INV: Quantize and invert with noise
@@ -98,11 +129,11 @@ def gpu_hp_inv(
         A0_inv = G_lp_inv + noise
     except Exception:
         # Singular matrix, return zero correction
-        A0_inv = jnp.zeros_like(G_lp)
+        A0_inv = jnp_local.zeros_like(G_lp)
         warnings.warn("Matrix is singular, using zero inverse approximation")
 
     # Initialize solution
-    x = jnp.zeros_like(b_jax, dtype=float)
+    x = jnp_local.zeros_like(b_jax, dtype=float)
     residuals = []
 
     # JIT-compiled iterative refinement loop
@@ -111,19 +142,19 @@ def gpu_hp_inv(
         # Compute residual r = b - G x
         Ax = G @ x
         r = b - Ax
-        residual_norm = jnp.linalg.norm(r)
-        
+        residual_norm = jnp_local.linalg.norm(r)
+
         # Update x with relaxation factor
         delta = A0_inv @ r
         x_new = x + relaxation_factor * delta
-        
+
         return x_new, residual_norm
 
     # Run iterative refinement
     for k in range(max_iter):
         x, residual_norm = refine_step(x, A0_inv, G_jax, b_jax, relaxation_factor)
         residuals.append(float(residual_norm))
-        
+
         # Check convergence
         if residual_norm < tol:
             break
@@ -219,15 +250,15 @@ def _cpu_hp_inv(
 
 
 def gpu_block_hp_inv(
-    G: onp.ndarray, 
-    b: onp.ndarray, 
-    block_size: int = 8, 
+    G: onp.ndarray,
+    b: onp.ndarray,
+    block_size: int = 8,
     use_gpu: bool = True,
     **kwargs
 ) -> Tuple[onp.ndarray, int, Dict[str, Any]]:
     """
     GPU-accelerated Block HP-INV implementation for large matrices using BlockAMC algorithm.
-    
+
     Args:
         G: Large conductance matrix to invert
         b: Right-hand side vector
@@ -238,25 +269,43 @@ def gpu_block_hp_inv(
     Returns:
         Tuple of (solution x, iterations taken, convergence info)
     """
+    # Check JAX availability
+    global JAX_AVAILABLE
+    if JAX_AVAILABLE is None:
+        try:
+            import jax
+            JAX_AVAILABLE = True
+        except (ImportError, RuntimeError):
+            JAX_AVAILABLE = False
+
     if not JAX_AVAILABLE or not use_gpu:
         # Fall back to CPU implementation
         return _cpu_block_hp_inv(G, b, block_size, **kwargs)
-    
+
+    try:
+        import jax
+        import jax.numpy as jnp_local
+        from jax import jit
+        from jax.scipy.linalg import inv as jax_inv
+    except (ImportError, RuntimeError):
+        # If JAX import fails at runtime, fall back to CPU
+        return _cpu_block_hp_inv(G, b, block_size, **kwargs)
+
     # Convert to JAX arrays
-    G_jax = jnp.array(G)
-    b_jax = jnp.array(b)
-    
+    G_jax = jnp_local.array(G)
+    b_jax = jnp_local.array(b)
+
     n = G_jax.shape[0]
     if n <= block_size:
         # Matrix is small enough, use standard GPU HP-INV
         return gpu_hp_inv(
-            G, b, 
+            G, b,
             use_gpu=use_gpu,
             **{k: v for k, v in kwargs.items() if k != 'max_iter'}
         )
 
     # Initialize solution
-    x = jnp.zeros_like(b_jax, dtype=float)
+    x = jnp_local.zeros_like(b_jax, dtype=float)
     residuals = []
 
     # Get parameters
@@ -269,7 +318,7 @@ def gpu_block_hp_inv(
     def process_block(x, G, b, block_idx, block_size, relaxation_factor):
         n = G.shape[0]
         i = block_idx * block_size
-        row_end = jnp.minimum(i + block_size, n)
+        row_end = jnp_local.minimum(i + block_size, n)
         row_slice = slice(i, row_end)
 
         # Extract the block of G
@@ -286,25 +335,25 @@ def gpu_block_hp_inv(
             x_block = G_block_inv @ r_block
         except:
             # Use pseudoinverse if not invertible
-            G_block_inv = jnp.linalg.pinv(G_block)
+            G_block_inv = jnp_local.linalg.pinv(G_block)
             x_block = G_block_inv @ r_block
 
         # Update the solution for this block
         x_new = x.at[row_slice].add(relaxation_factor * x_block)
-        return x_new, jnp.linalg.norm(r)
+        return x_new, jnp_local.linalg.norm(r)
 
     # Process blocks iteratively
     for k in range(max_iter):
         x_new = x
         residual_norm = 0.0
-        
+
         # Process all blocks in the matrix
-        num_blocks = int(jnp.ceil(n / block_size))
+        num_blocks = int(jnp_local.ceil(n / block_size))
         for block_idx in range(num_blocks):
             x_new, residual_norm = process_block(
                 x_new, G_jax, b_jax, block_idx, block_size, relaxation_factor
             )
-        
+
         x = x_new
         residuals.append(float(residual_norm))
 
@@ -326,18 +375,29 @@ def gpu_block_hp_inv(
 
 
 def _cpu_block_hp_inv(
-    G: onp.ndarray, 
-    b: onp.ndarray, 
-    block_size: int, 
+    G: onp.ndarray,
+    b: onp.ndarray,
+    block_size: int,
     **kwargs
 ) -> Tuple[onp.ndarray, int, Dict[str, Any]]:
     """
     CPU-only implementation of Block HP-INV for fallback.
     """
+    try:
+        from .hp_inv import hp_inv  # Import here to avoid circular import
+    except ImportError:
+        # Handle case where module is imported directly
+        import sys
+        import os
+        # Add the src directory to path if not already there
+        src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '')
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from hp_inv import hp_inv
+
     n = G.shape[0]
     if n <= block_size:
         # Matrix is small enough, use standard HP-INV
-        from .hp_inv import hp_inv  # Import here to avoid circular import
         return hp_inv(G, b, **{k: v for k, v in kwargs.items() if k != 'max_iter'})
 
     # Partition the matrix into blocks
@@ -366,7 +426,6 @@ def _cpu_block_hp_inv(
             # Solve for this block using HP-INV
             if G_block.shape[0] == G_block.shape[1]:  # Make sure it's square
                 # Use hp_inv function from the main module
-                from .hp_inv import hp_inv
                 x_block, _, _ = hp_inv(G_block, r_block, **{k: v for k, v in kwargs.items() if k != 'max_iter'})
 
                 # Update the solution for this block
@@ -393,15 +452,15 @@ def _cpu_block_hp_inv(
 
 
 def gpu_recursive_block_inversion(
-    G: onp.ndarray, 
-    block_size: int = 8, 
+    G: onp.ndarray,
+    block_size: int = 8,
     use_gpu: bool = True,
-    depth: int = 0, 
+    depth: int = 0,
     max_depth: int = 3
 ) -> onp.ndarray:
     """
     GPU-accelerated recursive implementation of block matrix inversion based on BlockAMC principles.
-    
+
     Args:
         G: Matrix to invert
         block_size: Base tile size for physical RRAM arrays
@@ -412,12 +471,29 @@ def gpu_recursive_block_inversion(
     Returns:
         Inverted matrix
     """
+    # Check JAX availability
+    global JAX_AVAILABLE
+    if JAX_AVAILABLE is None:
+        try:
+            import jax
+            JAX_AVAILABLE = True
+        except (ImportError, RuntimeError):
+            JAX_AVAILABLE = False
+
     if not JAX_AVAILABLE or not use_gpu:
         # Fall back to CPU implementation
         return _cpu_recursive_block_inversion(G, block_size, depth, max_depth)
-    
+
+    try:
+        import jax
+        import jax.numpy as jnp_local
+        from jax.scipy.linalg import inv as jax_inv
+    except (ImportError, RuntimeError):
+        # If JAX import fails at runtime, fall back to CPU
+        return _cpu_recursive_block_inversion(G, block_size, depth, max_depth)
+
     # Convert to JAX arrays
-    G_jax = jnp.array(G)
+    G_jax = jnp_local.array(G)
     n = G_jax.shape[0]
 
     # Base case: if matrix fits in a single block, return direct inverse
@@ -427,7 +503,7 @@ def gpu_recursive_block_inversion(
             return onp.array(result)
         except Exception:
             # If not invertible, return pseudoinverse
-            result = jnp.linalg.pinv(G_jax)
+            result = jnp_local.linalg.pinv(G_jax)
             return onp.array(result)
 
     # Divide matrix into 4 blocks (if possible)
@@ -440,7 +516,7 @@ def gpu_recursive_block_inversion(
     # Recursive block inversion formula
 
     # Invert D recursively
-    D_inv = jnp.array(
+    D_inv = jnp_local.array(
         gpu_recursive_block_inversion(
             onp.array(D), block_size, use_gpu, depth + 1, max_depth
         )
@@ -450,27 +526,27 @@ def gpu_recursive_block_inversion(
     S = A - B @ D_inv @ C
 
     # Invert S recursively
-    S_inv = jnp.array(
+    S_inv = jnp_local.array(
         gpu_recursive_block_inversion(
             onp.array(S), block_size, use_gpu, depth + 1, max_depth
         )
     )
 
     # Calculate the other Schur complement: T = D - C*A^(-1)*B
-    A_inv = jnp.array(
+    A_inv = jnp_local.array(
         gpu_recursive_block_inversion(
             onp.array(A), block_size, use_gpu, depth + 1, max_depth
         )
     )
     T = D - C @ A_inv @ B
-    T_inv = jnp.array(
+    T_inv = jnp_local.array(
         gpu_recursive_block_inversion(
             onp.array(T), block_size, use_gpu, depth + 1, max_depth
         )
     )
 
     # Now construct the inverse matrix
-    inv = jnp.zeros_like(G_jax)
+    inv = jnp_local.zeros_like(G_jax)
 
     # Top-left: S^(-1)
     inv = inv.at[:half_n, :half_n].set(S_inv)
@@ -488,15 +564,26 @@ def gpu_recursive_block_inversion(
 
 
 def _cpu_recursive_block_inversion(
-    G: onp.ndarray, 
-    block_size: int, 
-    depth: int, 
+    G: onp.ndarray,
+    block_size: int,
+    depth: int,
     max_depth: int
 ) -> onp.ndarray:
     """
     CPU-only recursive block inversion for fallback.
     """
-    from .hp_inv import recursive_block_inversion
+    try:
+        from .hp_inv import recursive_block_inversion
+    except ImportError:
+        # Handle case where module is imported directly
+        import sys
+        import os
+        # Add the src directory to path if not already there
+        src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '')
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from hp_inv import recursive_block_inversion
+
     return recursive_block_inversion(G, block_size, depth, max_depth)
 
 
@@ -504,11 +591,11 @@ class GPUAcceleratedHPINV:
     """
     A wrapper class for GPU-accelerated HP-INV operations.
     """
-    
+
     def __init__(self, use_gpu: bool = True):
         """
         Initialize the GPU-accelerated HP-INV solver.
-        
+
         Args:
             use_gpu: Whether to use GPU acceleration if available
         """
@@ -518,38 +605,68 @@ class GPUAcceleratedHPINV:
     def solve(self, G: onp.ndarray, b: onp.ndarray, **kwargs) -> Tuple[onp.ndarray, int, Dict[str, Any]]:
         """
         Solve the linear system G*x = b using GPU-accelerated HP-INV.
-        
+
         Args:
             G: Coefficient matrix
             b: Right-hand side vector
             **kwargs: Additional parameters for HP-INV
-            
+
         Returns:
             Tuple of (solution, iterations, info)
         """
         if self.use_gpu:
             return gpu_hp_inv(G, b, use_gpu=True, **kwargs)
         else:
-            from .hp_inv import hp_inv
-            return hp_inv(G, b, **kwargs)
+            # Filter kwargs to only include those that standard hp_inv accepts
+            valid_hp_inv_kwargs = {k: v for k, v in kwargs.items()
+                                   if k in ['bits', 'lp_noise_std', 'max_iter', 'tol', 'relaxation_factor']}
+
+            try:
+                from .hp_inv import hp_inv
+                return hp_inv(G, b, **valid_hp_inv_kwargs)
+            except ImportError:
+                # Handle case where module is imported directly
+                import sys
+                import os
+                # Add the src directory to path if not already there
+                src_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')
+                if src_dir not in sys.path:
+                    sys.path.insert(0, src_dir)
+                from hp_inv import hp_inv
+                return hp_inv(G, b, **valid_hp_inv_kwargs)
     
     def block_solve(self, G: onp.ndarray, b: onp.ndarray, **kwargs) -> Tuple[onp.ndarray, int, Dict[str, Any]]:
         """
         Solve the linear system using block HP-INV with GPU acceleration.
-        
+
         Args:
             G: Coefficient matrix
             b: Right-hand side vector
             **kwargs: Additional parameters for block HP-INV
-            
+
         Returns:
             Tuple of (solution, iterations, info)
         """
         if self.use_gpu:
             return gpu_block_hp_inv(G, b, use_gpu=True, **kwargs)
         else:
-            from .hp_inv import block_hp_inv
-            return block_hp_inv(G, b, **kwargs)
+            # Filter kwargs to only include those that standard block_hp_inv accepts
+            valid_block_hp_inv_kwargs = {k: v for k, v in kwargs.items()
+                                         if k in ['bits', 'lp_noise_std', 'max_iter', 'tol', 'relaxation_factor', 'block_size']}
+
+            try:
+                from .hp_inv import block_hp_inv
+                return block_hp_inv(G, b, **valid_block_hp_inv_kwargs)
+            except ImportError:
+                # Handle case where module is imported directly
+                import sys
+                import os
+                # Add the src directory to path if not already there
+                src_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')
+                if src_dir not in sys.path:
+                    sys.path.insert(0, src_dir)
+                from hp_inv import block_hp_inv
+                return block_hp_inv(G, b, **valid_block_hp_inv_kwargs)
     
     def invert_matrix(self, G: onp.ndarray, **kwargs) -> onp.ndarray:
         """
@@ -600,13 +717,31 @@ def adaptive_gpu_hp_inv(
     Returns:
         Tuple of (solution x, iterations taken, convergence info)
     """
+    # Check JAX availability
+    global JAX_AVAILABLE
+    if JAX_AVAILABLE is None:
+        try:
+            import jax
+            import jax.numpy as jnp_local
+            JAX_AVAILABLE = True
+        except (ImportError, RuntimeError):
+            JAX_AVAILABLE = False
+
     if not JAX_AVAILABLE or not use_gpu:
         # Fall back to CPU implementation
         return _cpu_adaptive_hp_inv(G, b, initial_bits, max_bits,
                                   convergence_threshold, max_iter, tol, **kwargs)
 
+    try:
+        import jax
+        import jax.numpy as jnp_local
+    except (ImportError, RuntimeError):
+        # If JAX import fails at runtime, fall back to CPU
+        return _cpu_adaptive_hp_inv(G, b, initial_bits, max_bits,
+                                  convergence_threshold, max_iter, tol, **kwargs)
+
     bits = initial_bits
-    x = jnp.array(onp.zeros_like(b, dtype=float))
+    x = jnp_local.array(onp.zeros_like(b, dtype=float))
     total_iterations = 0
     all_residuals = []
 
@@ -626,7 +761,7 @@ def adaptive_gpu_hp_inv(
         )
 
         # Convert result back to jax array if needed
-        x_new_jax = jnp.array(x_new)
+        x_new_jax = jnp_local.array(x_new)
 
         # Update solution
         x = x_new_jax
@@ -676,7 +811,18 @@ def _cpu_adaptive_hp_inv(
     """
     CPU-only adaptive HP-INV for fallback.
     """
-    from .hp_inv import adaptive_hp_inv
+    try:
+        from .hp_inv import adaptive_hp_inv
+    except ImportError:
+        # Handle case where module is imported directly
+        import sys
+        import os
+        # Add the src directory to path if not already there
+        src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '')
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from hp_inv import adaptive_hp_inv
+
     return adaptive_hp_inv(G, b,
                           initial_bits=initial_bits,
                           max_bits=max_bits,
@@ -758,5 +904,20 @@ class AdaptivePrecisionHPINV:
         if self.use_gpu:
             return adaptive_gpu_hp_inv(G, b, use_gpu=True, **kwargs)
         else:
-            from .hp_inv import adaptive_hp_inv
-            return adaptive_hp_inv(G, b, **kwargs)
+            # Filter kwargs to only include those that standard adaptive_hp_inv accepts
+            valid_adaptive_kwargs = {k: v for k, v in kwargs.items()
+                                     if k in ['initial_bits', 'max_bits', 'max_iter', 'tol']}
+
+            try:
+                from .hp_inv import adaptive_hp_inv
+                return adaptive_hp_inv(G, b, **valid_adaptive_kwargs)
+            except ImportError:
+                # Handle case where module is imported directly
+                import sys
+                import os
+                # Add the src directory to path if not already there
+                src_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')
+                if src_dir not in sys.path:
+                    sys.path.insert(0, src_dir)
+                from hp_inv import adaptive_hp_inv
+                return adaptive_hp_inv(G, b, **valid_adaptive_kwargs)

@@ -17,45 +17,54 @@ from functools import partial
 import sys
 import os
 
-# Try to import performance optimization libraries
-try:
-    import jax
-    import jax.numpy as jnp
-    from jax import jit, vmap, pmap, grad
-    JAX_AVAILABLE = True
-except ImportError:
-    JAX_AVAILABLE = False
-    warnings.warn("JAX not available, GPU acceleration disabled")
-
-try:
-    from numba import jit as numba_jit
-    NUMBA_AVAILABLE = True
-except ImportError:
-    NUMBA_AVAILABLE = False
-    warnings.warn("Numba not available, CPU JIT optimization disabled")
+# Performance libraries will be imported at function level to avoid AVX issues
+JAX_AVAILABLE = None  # Will be set when import is attempted
+NUMBA_AVAILABLE = None  # Will be set when import is attempted
 
 
 class PerformanceOptimizer:
     """
     Main class for performance optimization of RRAM algorithms.
     """
-    
+
     def __init__(self, use_jax: bool = True, use_numba: bool = True, n_cores: Optional[int] = None):
         """
         Initialize the performance optimizer.
-        
+
         Args:
             use_jax: Whether to use JAX for GPU acceleration
             use_numba: Whether to use Numba for CPU JIT compilation
             n_cores: Number of CPU cores to use (default: all available)
         """
+        # Check JAX availability
+        global JAX_AVAILABLE, NUMBA_AVAILABLE
+
+        if JAX_AVAILABLE is None:
+            try:
+                import jax
+                JAX_AVAILABLE = True
+            except (ImportError, RuntimeError):
+                JAX_AVAILABLE = False
+                if use_jax:
+                    warnings.warn("JAX not available, GPU acceleration disabled")
+
+        if NUMBA_AVAILABLE is None:
+            try:
+                from numba import jit as numba_jit
+                NUMBA_AVAILABLE = True
+            except ImportError:
+                NUMBA_AVAILABLE = False
+                if use_numba:
+                    warnings.warn("Numba not available, CPU JIT optimization disabled")
+
         self.use_jax = use_jax and JAX_AVAILABLE
         self.use_numba = use_numba and NUMBA_AVAILABLE
         self.n_cores = n_cores or mp.cpu_count()
-        
+
         # Set JAX to use GPU if available
         if self.use_jax:
             try:
+                import jax
                 jax.config.update('jax_enable_x64', True)  # Enable 64-bit precision
             except:
                 pass  # May already be set
@@ -68,25 +77,35 @@ class PerformanceOptimizer:
             return self._optimize_rram_model_numba()
         else:
             return self._optimize_rram_model_basic()
-    
+
     def _optimize_rram_model_jax(self):
         """JAX-optimized RRAM model functions."""
+        try:
+            import jax
+            from jax import jit
+            import jax.numpy as jnp
+        except (ImportError, RuntimeError):
+            # Fallback to basic implementation if JAX fails
+            return self._optimize_rram_model_basic()
+
         @jit
-        def quantize_jax(matrix: jnp.ndarray, bits: int) -> jnp.ndarray:
+        def quantize_jax(matrix, bits):
             """JAX-optimized quantization."""
             if matrix.size == 0 or jnp.all(matrix == 0):
                 return matrix
             max_val = jnp.max(jnp.abs(matrix))
             levels = 2**bits - 1
+            if max_val == 0:
+                return matrix
             scale = levels / max_val
             quantized = jnp.round(matrix * scale) / scale
             return quantized
-        
+
         @jit
-        def mvm_jax(G: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
+        def mvm_jax(G, x):
             """JAX-optimized matrix-vector multiplication."""
             return G @ x
-        
+
         return quantize_jax, mvm_jax
     
     def _optimize_rram_model_numba(self):
@@ -137,19 +156,19 @@ class PerformanceOptimizer:
 def _stress_test_worker(args):
     """Worker function for parallel stress testing."""
     n, seed_offset, variability, stuck_prob, bits, lp_noise_std, max_iter = args
-    
+
     import sys
     import os
     # Add the project root to path to import the modules
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    
+
     import numpy as np
     # Import inside function to avoid circular imports
     from src.rram_model import create_rram_matrix
     from src.hp_inv import hp_inv
-    
+
     np.random.seed(seed_offset)  # Set different seed for each process
-    
+
     try:
         # Generate a single sample using RRAM model
         G = create_rram_matrix(n, variability=variability, stuck_fault_prob=stuck_prob)
@@ -218,11 +237,11 @@ def parallel_stress_test(n: int, num_samples: int, variability: float = 0.05,
 
 
 def jax_hp_inv(G, b, bits: int = 3, lp_noise_std: float = 0.01,
-               max_iter: int = 10, tol: float = 1e-6, 
+               max_iter: int = 10, tol: float = 1e-6,
                relaxation_factor: float = 1.0):
     """
     JAX-optimized HP-INV algorithm for GPU acceleration.
-    
+
     Args:
         G: Conductance matrix (with variability)
         b: Right-hand side vector
@@ -231,15 +250,33 @@ def jax_hp_inv(G, b, bits: int = 3, lp_noise_std: float = 0.01,
         max_iter: Maximum iterations
         tol: Tolerance for convergence
         relaxation_factor: Relaxation factor for convergence acceleration
-    
+
     Returns:
         Tuple of (solution x, iterations taken, convergence info)
     """
+    # Check JAX availability
+    global JAX_AVAILABLE
+    if JAX_AVAILABLE is None:
+        try:
+            import jax
+            JAX_AVAILABLE = True
+        except (ImportError, RuntimeError):
+            JAX_AVAILABLE = False
+
     if not JAX_AVAILABLE:
         warnings.warn("JAX not available, falling back to CPU implementation")
         from src.hp_inv import hp_inv
         return hp_inv(G, b, bits, lp_noise_std, max_iter, tol, relaxation_factor)
-    
+
+    try:
+        import jax
+        import jax.numpy as jnp
+        from jax import jit
+    except (ImportError, RuntimeError):
+        warnings.warn("JAX not available, falling back to CPU implementation")
+        from src.hp_inv import hp_inv
+        return hp_inv(G, b, bits, lp_noise_std, max_iter, tol, relaxation_factor)
+
     @jit
     def quantize_jax(matrix, bits):
         """JAX quantization function."""
@@ -256,10 +293,10 @@ def jax_hp_inv(G, b, bits: int = 3, lp_noise_std: float = 0.01,
     # Convert to JAX arrays
     G_jax = jnp.array(G)
     b_jax = jnp.array(b)
-    
+
     # LP-INV: Quantize and invert with noise
     G_lp = quantize_jax(G_jax, bits)
-    
+
     try:
         G_lp_inv = jnp.linalg.inv(G_lp)
         noise = jax.random.normal(jax.random.PRNGKey(42), G_lp_inv.shape) * lp_noise_std
@@ -271,17 +308,17 @@ def jax_hp_inv(G, b, bits: int = 3, lp_noise_std: float = 0.01,
     def body_fun(carry):
         """Body function for the iterative loop."""
         x, k, residuals = carry
-        
+
         # HP-MVM: Compute residual r = b - G x
         Ax = G_jax @ x
         r = b_jax - Ax
         residual_norm = jnp.linalg.norm(r)
         residuals = residuals.at[k].set(residual_norm)
-        
+
         # Update x
         delta = A0_inv @ r
         x_new = x + relaxation_factor * delta
-        
+
         return x_new, k + 1, residuals
 
     def cond_fun(carry):
@@ -292,23 +329,23 @@ def jax_hp_inv(G, b, bits: int = 3, lp_noise_std: float = 0.01,
     # Initialize
     x = jnp.zeros_like(b_jax, dtype=jnp.float64)
     residuals = jnp.full(max_iter, jnp.inf)
-    
+
     # Run the iterative loop
     x_final, k_final, residuals_final = jax.lax.while_loop(
         cond_fun, body_fun, (x, 0, residuals)
     )
-    
+
     # Convert back to numpy
     x_result = np.array(x_final)
     residuals_result = np.array(residuals_final)
-    
+
     info = {
         'residuals': residuals_result[:k_final+1].tolist(),
         'final_residual': float(residuals_result[k_final-1]) if k_final > 0 else float(residuals_result[0]),
         'converged': residuals_result[k_final-1] < tol if k_final > 0 else False,
         'condition_number_estimate': float(np.linalg.cond(G)) if k_final > 0 else float('inf')
     }
-    
+
     return x_result, int(k_final), info
 
 
@@ -374,39 +411,48 @@ def benchmark_performance():
     import sys
     import os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    
+
     from src.rram_model import create_rram_matrix
     from src.hp_inv import hp_inv
-    
+
     print("Performance Benchmarking")
     print("=" * 40)
-    
+
     # Create test matrices of different sizes
     sizes = [64, 128]  # Smaller sizes for demonstration
-    
+
     for n in sizes:
         print(f"\nTesting with {n}x{n} matrices:")
-        
+
         # Standard implementation timing
         G_std = create_rram_matrix(n, variability=0.03, stuck_fault_prob=0.01)
         G_std = G_std + 0.1 * np.eye(n)  # Ensure conditioning
         b_std = np.random.randn(n)
-        
+
         start_time = time.time()
         x_std, iters_std, info_std = hp_inv(G_std, b_std, max_iter=10)
         std_time = time.time() - start_time
-        
+
         print(f"  Standard HP-INV: {std_time:.4f}s for {n}x{n} matrix")
-        
+
         # JAX implementation timing (if available)
+        # Check JAX availability
+        global JAX_AVAILABLE
+        if JAX_AVAILABLE is None:
+            try:
+                import jax
+                JAX_AVAILABLE = True
+            except (ImportError, RuntimeError):
+                JAX_AVAILABLE = False
+
         if JAX_AVAILABLE:
             start_time = time.time()
             x_jax, iters_jax, info_jax = jax_hp_inv(G_std, b_std, max_iter=10)
             jax_time = time.time() - start_time
-            
+
             print(f"  JAX HP-INV: {jax_time:.4f}s for {n}x{n} matrix")
             print(f"  Speedup: {std_time/jax_time:.2f}x")
-        
+
         # Parallel stress test timing
         print(f"  Running parallel stress test with {min(10, n//2)} samples...")
         start_time = time.time()
@@ -414,7 +460,7 @@ def benchmark_performance():
             n=min(8, n//8), num_samples=min(10, n//2), n_processes=4
         )
         parallel_time = time.time() - start_time
-        
+
         print(f"  Parallel stress test: {parallel_time:.4f}s for {min(10, n//2)} samples")
 
 
@@ -512,23 +558,23 @@ if __name__ == "__main__":
     # Test the performance optimization features
     print("Testing Performance Optimization Features")
     print("=" * 50)
-    
+
     # Test optimizer initialization
     optimizer = PerformanceOptimizer()
     print(f"JAX available: {JAX_AVAILABLE}")
     print(f"Numba available: {NUMBA_AVAILABLE}")
     print(f"Using {optimizer.n_cores} CPU cores")
-    
+
     # Test sparse model
     sparse_model = SparseRRAMModel()
     if sparse_model.sparse_available:
         sparse_G = sparse_model.create_sparse_rram_matrix(16, sparsity=0.2)
         print(f"Sparse matrix created: shape {sparse_G.shape if sparse_G is not None else None}")
-    
+
     # Test mixed precision
     mixed_opt = MixedPrecisionOptimizer()
     print("Mixed precision optimizer initialized")
-    
+
     # Run basic performance test
     benchmark_performance()
     print("\nPerformance optimization tests completed!")
