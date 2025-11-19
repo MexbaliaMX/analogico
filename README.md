@@ -26,7 +26,18 @@ Analogico is a Python project focused on analogue computing algorithms for High-
 To install the project dependencies:
 
 ```bash
-pip install -r requirements.txt
+# For basic functionality (recommended)
+pip install numpy scipy matplotlib jax jaxlib invoke
+
+# For full functionality including performance optimizations:
+# On Ubuntu/Debian:
+sudo apt update
+sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-12-dev
+pip install numpy scipy matplotlib jax jaxlib invoke numba
+
+# On Fedora:
+sudo dnf install python3-devel python3-pip gcc gcc-c++ openblas-devel lapack-devel gfortran llvm-devel
+pip install numpy scipy matplotlib jax jaxlib invoke numba
 ```
 
 Note: If you have compatibility issues with JAX, you can install the CPU-only version:
@@ -34,6 +45,24 @@ Note: If you have compatibility issues with JAX, you can install the CPU-only ve
 pip install jax[cpu]  # For systems with AVX support
 # or
 # Skip JAX installation entirely - all functions will use CPU fallbacks
+```
+
+## Optional Performance Dependencies
+
+For enhanced performance with JIT compilation, install Numba:
+- This may require system-level dependencies like LLVM
+- The core functionality works without Numba, but with reduced performance
+- To install: `pip install numba`
+
+## Poetry Installation
+
+If using Poetry for dependency management:
+```bash
+# Install system dependencies first (Ubuntu/Debian):
+sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-12-dev
+
+# Then install Python dependencies:
+poetry install --with dev
 ```
 
 ## Usage

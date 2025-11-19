@@ -12,9 +12,9 @@ jaxlib = "^0.4.0"  # Required for JAX
 matplotlib = "^3.5.0"
 scipy = "^1.7.0"
 invoke = "^2.0.0"
-numba = "^0.58.0"  # For JIT compilation
 
 [tool.poetry.dev-dependencies]
+numba = "^0.58.0"  # For JIT compilation (optional performance enhancement)
 pytest = "^7.0.0"
 hypothesis = "^6.0.0"
 ruff = "^0.1.0"

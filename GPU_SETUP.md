@@ -13,15 +13,17 @@ Before setting up GPU acceleration, ensure you have:
 
 ### Installing System Dependencies
 
+For performance optimizations with Numba JIT compilation, additional system dependencies are required:
+
 For Fedora:
 ```bash
-sudo dnf install python3-devel python3-pip gcc gcc-c++ openblas-devel lapack-devel gfortran
+sudo dnf install python3-devel python3-pip gcc gcc-c++ openblas-devel lapack-devel gfortran llvm-devel
 ```
 
 For Ubuntu/Debian:
 ```bash
 sudo apt update
-sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran
+sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-12-dev
 ```
 
 ## Installing CUDA Toolkit (if needed)

@@ -16,6 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-12-dev
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -26,7 +31,7 @@ jobs:
         run: pip install poetry
 
       - name: Install dependencies
-        run: poetry install --no-interaction --no-root
+        run: poetry install --with dev --no-interaction --no-root
 
       - name: Run pytest with coverage
         run: poetry run pytest --cov=src --cov-report=xml
