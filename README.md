@@ -32,7 +32,7 @@ pip install numpy scipy matplotlib jax jaxlib invoke
 # For full functionality including performance optimizations:
 # On Ubuntu/Debian:
 sudo apt update
-sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-12-dev
+sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-dev
 pip install numpy scipy matplotlib jax jaxlib invoke numba
 
 # On Fedora:
@@ -59,7 +59,7 @@ For enhanced performance with JIT compilation, install Numba:
 If using Poetry for dependency management:
 ```bash
 # Install system dependencies first (Ubuntu/Debian):
-sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-12-dev
+sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-dev
 
 # Then install Python dependencies:
 poetry install --with dev

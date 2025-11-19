@@ -23,7 +23,7 @@ sudo dnf install python3-devel python3-pip gcc gcc-c++ openblas-devel lapack-dev
 For Ubuntu/Debian:
 ```bash
 sudo apt update
-sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-12-dev
+sudo apt install python3-dev python3-pip build-essential libopenblas-dev liblapack-dev gfortran llvm-dev
 ```
 
 ## Installing CUDA Toolkit (if needed)
