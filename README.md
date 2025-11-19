@@ -96,6 +96,13 @@ Run these before commits/PRs to stay compliant with the AGENTS playbook:
    # Run all usage examples
    python examples.py
    ```
+5. **GPU Acceleration Validation** (Optional)
+   ```bash
+   # To validate GPU acceleration infrastructure without requiring compatible runtime
+   python gpu_end_to_end_test.py
+   # Or run the basic functionality test
+   python basic_functionality_test.py
+   ```
 
 ## Usage Examples
 
