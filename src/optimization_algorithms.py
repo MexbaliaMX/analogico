@@ -9,6 +9,7 @@ import numpy as np
 import warnings
 from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 from abc import ABC, abstractmethod
+from collections import deque
 import time
 from enum import Enum
 
@@ -58,16 +59,16 @@ class RRAMOptimizer(ABC):
 class ParameterTuningOptimizer(RRAMOptimizer):
     """
     Optimizer that automatically tunes HP-INV parameters based on matrix properties
-    and RRAM characteristics.
+    and RRAM characteristics. Uses bounded history to prevent memory leaks.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  rram_interface: Optional[object] = None,
                  max_bits: int = 8,
                  max_iterations: int = 20):
         """
         Initialize the parameter tuning optimizer.
-        
+
         Args:
             rram_interface: Optional RRAM interface for hardware feedback
             max_bits: Maximum quantization bits to consider
@@ -76,7 +77,7 @@ class ParameterTuningOptimizer(RRAMOptimizer):
         self.rram_interface = rram_interface
         self.max_bits = max_bits
         self.max_iterations = max_iterations
-        self.optimization_history = []
+        self.optimization_history = deque(maxlen=1000)
     
     def optimize(self, G: np.ndarray, b: np.ndarray, **kwargs) -> Dict[str, Any]:
         """
@@ -239,15 +240,16 @@ class ParameterTuningOptimizer(RRAMOptimizer):
 class MachineLearningOptimizer(RRAMOptimizer):
     """
     Machine learning-based optimizer that learns optimal parameters from experience.
+    Uses bounded buffers to prevent memory leaks during long-term learning.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  rram_interface: Optional[object] = None,
                  learning_rate: float = 0.01,
                  use_gpu: bool = False):
         """
         Initialize the ML-based optimizer.
-        
+
         Args:
             rram_interface: Optional RRAM interface for hardware feedback
             learning_rate: Learning rate for parameter updates
@@ -256,14 +258,14 @@ class MachineLearningOptimizer(RRAMOptimizer):
         self.rram_interface = rram_interface
         self.learning_rate = learning_rate
         self.use_gpu = use_gpu
-        self.experience_buffer = []
+        self.experience_buffer = deque(maxlen=1000)
         self.parameter_weights = {
             'bits': 1.0,
             'relaxation_factor': 1.0,
             'lp_noise_std': 1.0,
             'max_iter': 1.0
         }
-        self.performance_history = []
+        self.performance_history = deque(maxlen=1000)
     
     def optimize(self, G: np.ndarray, b: np.ndarray, **kwargs) -> Dict[str, Any]:
         """
@@ -292,21 +294,17 @@ class MachineLearningOptimizer(RRAMOptimizer):
         # Calculate performance metrics
         performance = self._evaluate_performance(solution, G, b, iterations, info)
         
-        # Store experience for learning
+        # Store experience for learning (automatically bounded by deque maxlen)
         self.experience_buffer.append({
             'features': features,
             'parameters': constrained_params,
             'performance': performance,
             'timestamp': time.time()
         })
-        
+
         # Update learned parameter weights based on performance
         self._update_parameter_weights(constrained_params, performance)
-        
-        # Limit experience buffer size
-        if len(self.experience_buffer) > 1000:
-            self.experience_buffer.pop(0)
-        
+
         result = {
             'solution': solution,
             'iterations': iterations,
@@ -315,9 +313,9 @@ class MachineLearningOptimizer(RRAMOptimizer):
             'features': features,
             'performance': performance
         }
-        
+
         self.performance_history.append(performance)
-        
+
         return result
     
     def _extract_matrix_features(self, G: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -561,7 +559,8 @@ class AdaptiveMatrixPropertyOptimizer(RRAMOptimizer):
                 # Check if all eigenvalues are positive
                 eigenvals = np.linalg.eigvals(G)
                 is_positive_definite = np.all(eigenvals > 0)
-            except:
+            except (np.linalg.LinAlgError, ValueError, RuntimeError) as e:
+                warnings.warn(f"Failed to calculate eigenvalues for positive definiteness check: {e}")
                 is_positive_definite = False
         
         # Classify based on properties

@@ -13,6 +13,8 @@ from typing import Dict, List, Tuple, Optional, Callable
 from dataclasses import dataclass
 import time
 from enum import Enum
+from collections import deque
+import threading
 
 
 class RRAMMaterialType(Enum):
@@ -58,11 +60,14 @@ class AdvancedRRAMModel:
     """
     Advanced RRAM model with temperature effects, aging, and physics-based modeling.
     """
-    
+
+    # Maximum history size to prevent memory leaks
+    MAX_HISTORY_SIZE = 1000
+
     def __init__(self, params: Optional[RRAMParameters] = None):
         """
         Initialize advanced RRAM model with physics-based parameters.
-        
+
         Args:
             params: RRAMParameters object with model parameters
         """
@@ -70,7 +75,8 @@ class AdvancedRRAMModel:
         self.temperature = self.params.reference_temp  # Current temperature in Kelvin
         self.time = 0.0  # Elapsed time in seconds
         self.cycle_count = 0  # Number of switching cycles
-        self.conductance_history = []  # History of conductance values
+        # Use deque with maxlen to prevent unbounded memory growth
+        self.conductance_history = deque(maxlen=self.MAX_HISTORY_SIZE)
         self.current_conductance = self.params.init_conductance
         
     def update_temperature(self, new_temp: float) -> None:
@@ -321,86 +327,106 @@ class MaterialSpecificRRAMModel(AdvancedRRAMModel):
 class TemporalRRAMModel(AdvancedRRAMModel):
     """
     RRAM model with explicit time-dependent effects including retention and drift.
+
+    This class is thread-safe for concurrent access to time-dependent state.
     """
-    
+
+    # Maximum programming history size to prevent memory leaks
+    MAX_PROGRAMMING_HISTORY_SIZE = 1000
+
     def __init__(self, params: Optional[RRAMParameters] = None):
         super().__init__(params)
         self.last_update_time = time.time()
         self.retention_time = 0.0
         self.time_since_programming = 0.0
-        self.programming_history = []  # Track programming events
+        # Use deque with maxlen to prevent unbounded memory growth
+        self.programming_history = deque(maxlen=self.MAX_PROGRAMMING_HISTORY_SIZE)
+        # Thread lock for protecting shared mutable state
+        self._lock = threading.Lock()
         
     def program_conductance(
-        self, 
-        target_conductance: float, 
-        voltage_pulse: float, 
+        self,
+        target_conductance: float,
+        voltage_pulse: float,
         pulse_duration: float
     ) -> bool:
         """
         Program the RRAM to a target conductance with voltage pulse.
-        
+
+        This method is thread-safe.
+
         Args:
             target_conductance: Target conductance value
             voltage_pulse: Programming voltage
             pulse_duration: Duration of the pulse
-            
+
         Returns:
             True if programming successful, False otherwise
         """
-        try:
-            # Update time since programming
-            current_time = time.time()
-            elapsed = current_time - self.last_update_time
-            self.time_since_programming += elapsed
-            self.last_update_time = current_time
-            
-            # Apply the programming pulse
-            new_conductance = self.update_conductance(
-                target_conductance, 
-                voltage_pulse, 
-                pulse_duration
-            )
-            
-            # Record programming event
-            self.programming_history.append({
-                'time': self.time_since_programming,
-                'target': target_conductance,
-                'actual': new_conductance,
-                'voltage': voltage_pulse,
-                'duration': pulse_duration
-            })
-            
-            return True
-        except Exception:
-            return False
+        with self._lock:
+            try:
+                # Update time since programming
+                current_time = time.time()
+                elapsed = current_time - self.last_update_time
+                self.time_since_programming += elapsed
+                self.last_update_time = current_time
+
+                # Apply the programming pulse
+                new_conductance = self.update_conductance(
+                    target_conductance,
+                    voltage_pulse,
+                    pulse_duration
+                )
+
+                # Record programming event
+                self.programming_history.append({
+                    'time': self.time_since_programming,
+                    'target': target_conductance,
+                    'actual': new_conductance,
+                    'voltage': voltage_pulse,
+                    'duration': pulse_duration
+                })
+
+                return True
+            except Exception as e:
+                # Log the exception for debugging
+                import logging
+                logging.getLogger(self.__class__.__name__).error(f"Programming failed: {e}")
+                return False
     
     def get_retention_affected_conductance(self) -> float:
         """
         Get conductance affected by retention loss over time.
-        
+
+        This method is thread-safe.
+
         Returns:
             Conductance adjusted for retention loss
         """
-        # Simple retention model: exponential decay based on time since programming
-        retention_factor = np.exp(-self.time_since_programming * 1e-6)  # Adjust time constant
-        return self.current_conductance * retention_factor
-    
+        with self._lock:
+            # Simple retention model: exponential decay based on time since programming
+            retention_factor = np.exp(-self.time_since_programming * 1e-6)  # Adjust time constant
+            return self.current_conductance * retention_factor
+
     def simulate_drift(self, time_elapsed: float) -> float:
         """
         Simulate time-dependent drift in conductance.
-        
+
+        This method is thread-safe.
+
         Args:
             time_elapsed: Time elapsed since last measurement
-            
+
         Returns:
             Change in conductance due to drift
         """
-        # Time-dependent drift following power law: drift = A * t^gamma
-        drift_coeff = self.params.drift_coefficient
-        gamma = 0.1  # Typical for RRAM devices
-        
-        drift = drift_coeff * (time_elapsed ** gamma)
-        return drift
+        with self._lock:
+            # Time-dependent drift following power law: drift = A * t^gamma
+            drift_coeff = self.params.drift_coefficient
+            gamma = 0.1  # Typical for RRAM devices
+
+            drift = drift_coeff * (time_elapsed ** gamma)
+            return drift
 
 
 class TDDBModel(AdvancedRRAMModel):

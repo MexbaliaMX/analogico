@@ -2,8 +2,11 @@ import numpy as np
 from typing import List, Optional
 import sys
 import os
+import warnings
 # Add the project root to path to import advanced models
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from .utils import validate_parameter, validate_matrix_inputs
 
 # Try to import performance optimization tools
 try:
@@ -51,7 +54,37 @@ def create_rram_matrix(n: int,
 
     Returns:
         Conductance matrix G
+
+    Raises:
+        TypeError: If inputs are not correct types
+        ValueError: If parameters are invalid or out of range
     """
+    # Validate parameters
+    validate_parameter(n, "n", min_value=1, integer=True, func_name="create_rram_matrix")
+    if n > 1024:
+        warnings.warn(f"Large matrix size {n} may cause performance issues")
+    if not isinstance(conductance_levels, (list, np.ndarray)):
+        raise TypeError(f"conductance_levels must be a list or numpy array, got {type(conductance_levels)}")
+    if len(conductance_levels) == 0:
+        raise ValueError("conductance_levels cannot be empty")
+    validate_parameter(variability, "variability", min_value=0, func_name="create_rram_matrix")
+    if variability > 1.0:
+        warnings.warn(f"High variability {variability} may cause unrealistic conductance values")
+    validate_parameter(stuck_fault_prob, "stuck_fault_prob", min_value=0, max_value=1, func_name="create_rram_matrix")
+    validate_parameter(line_resistance, "line_resistance", min_value=0, func_name="create_rram_matrix")
+    validate_parameter(temperature, "temperature", min_value=0, func_name="create_rram_matrix")
+    if temperature < 200 or temperature > 500:
+        warnings.warn(f"Temperature {temperature}K is outside typical RRAM operating range (200-500K)")
+    validate_parameter(time_since_programming, "time_since_programming", min_value=0, func_name="create_rram_matrix")
+    validate_parameter(ecm_vcm_ratio, "ecm_vcm_ratio", min_value=0, max_value=1, func_name="create_rram_matrix")
+
+    # Validate numeric values in conductance_levels
+    conductance_array = np.array(conductance_levels)
+    if not np.all(np.isfinite(conductance_array)):
+        raise ValueError("conductance_levels contains non-finite values")
+    if np.any(conductance_array < 0):
+        raise ValueError("conductance_levels cannot contain negative values")
+
     if use_material_specific:
         # Use the new material-specific physics models
         G = create_material_specific_rram_matrix(
@@ -187,9 +220,30 @@ def create_material_specific_rram_matrix(n: int,
         
     Returns:
         Conductance matrix G with material-specific characteristics
+
+    Raises:
+        TypeError: If inputs are not correct types
+        ValueError: If parameters are invalid or out of range
     """
+    # Validate parameters
+    validate_parameter(n, "n", min_value=1, integer=True, func_name="create_material_specific_rram_matrix")
+    if not isinstance(material, str):
+        raise TypeError(f"material must be a string, got {type(material)}")
+    validate_parameter(device_area, "device_area", min_value=0, func_name="create_material_specific_rram_matrix")
+    if device_area > 1e-6:
+        warnings.warn(f"Unusually large device_area {device_area} m²")
+    validate_parameter(temperature, "temperature", min_value=0, func_name="create_material_specific_rram_matrix")
+    if temperature < 200 or temperature > 500:
+        warnings.warn(f"Temperature {temperature}K is outside typical RRAM operating range (200-500K)")
+    validate_parameter(stuck_fault_prob, "stuck_fault_prob", min_value=0, max_value=1, func_name="create_material_specific_rram_matrix")
+    validate_parameter(time_since_programming, "time_since_programming", min_value=0, func_name="create_material_specific_rram_matrix")
+    validate_parameter(ecm_vcm_ratio, "ecm_vcm_ratio", min_value=0, max_value=1, func_name="create_material_specific_rram_matrix")
+
+    if n > 1024:
+        warnings.warn(f"Large matrix size {n} may cause performance issues")
+
     from .advanced_rram_models import AdvancedRRAMModel, RRAMMaterial
-    
+
     # Map string material to enum
     material_map = {
         'HfO2': RRAMMaterial.HFO2,
@@ -198,7 +252,13 @@ def create_material_specific_rram_matrix(n: int,
         'NiOx': RRAMMaterial.NIOX,
         'CoOx': RRAMMaterial.COOX
     }
-    material_enum = material_map.get(material, RRAMMaterial.HFO2)
+
+    # Validate material selection
+    if material not in material_map:
+        valid_materials = ', '.join(material_map.keys())
+        raise ValueError(f"Invalid material '{material}'. Valid materials are: {valid_materials}")
+
+    material_enum = material_map[material]
     
     # Create individual devices using advanced material-specific model
     G = np.zeros((n, n))
@@ -240,10 +300,15 @@ def mvm(G: np.ndarray, x: np.ndarray) -> np.ndarray:
     Perform matrix-vector multiplication with conductance matrix.
 
     Args:
-        G: Conductance matrix
-        x: Input vector
+        G: Conductance matrix (m x n)
+        x: Input vector (n,)
 
     Returns:
-        Output vector y = G @ x
+        Output vector y = G @ x (m,)
+
+    Raises:
+        ValueError: If dimensions don't match or inputs are invalid
+        TypeError: If inputs are not numpy arrays
     """
-    return G @ x
+    from .utils import matrix_vector_multiply
+    return matrix_vector_multiply(G, x)

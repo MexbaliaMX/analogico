@@ -79,6 +79,12 @@ class CommunicationProtocol(ABC):
         pass
 
 
+# Command whitelist for security
+ALLOWED_COMMANDS = {'INIT', 'CONFIG', 'WRITE_MATRIX', 'READ_MATRIX', 'MVM', 'INVERT'}
+MAX_RESPONSE_SIZE = 10240  # 10KB limit for JSON responses
+MAX_MATRIX_SIZE = 1024  # Maximum elements in a matrix
+
+
 class SerialProtocol(CommunicationProtocol):
     """Serial communication protocol."""
 
@@ -89,6 +95,91 @@ class SerialProtocol(CommunicationProtocol):
         self.serial_conn = None
         self.connected = False
         self.logger = logging.getLogger(self.__class__.__name__)
+
+    def _validate_command(self, cmd: Dict[str, Any]) -> None:
+        """
+        Validate command before sending to hardware.
+
+        Args:
+            cmd: Command dictionary to validate
+
+        Raises:
+            ValueError: If command is invalid or malformed
+        """
+        if not isinstance(cmd, dict):
+            raise ValueError("Command must be a dictionary")
+
+        if 'cmd' not in cmd:
+            raise ValueError("Command must have 'cmd' field")
+
+        if cmd['cmd'] not in ALLOWED_COMMANDS:
+            raise ValueError(f"Invalid command: {cmd['cmd']}. Allowed: {ALLOWED_COMMANDS}")
+
+        # Validate command-specific parameters
+        if cmd['cmd'] == 'WRITE_MATRIX':
+            if 'matrix' not in cmd:
+                raise ValueError("WRITE_MATRIX command requires 'matrix' field")
+            matrix = cmd['matrix']
+            if not isinstance(matrix, list):
+                raise ValueError("Matrix must be a list")
+            if len(matrix) == 0:
+                raise ValueError("Matrix cannot be empty")
+            # Check total size
+            total_elements = sum(len(row) if isinstance(row, list) else 0 for row in matrix)
+            if total_elements > MAX_MATRIX_SIZE:
+                raise ValueError(f"Matrix too large: {total_elements} > {MAX_MATRIX_SIZE}")
+
+        elif cmd['cmd'] == 'MVM':
+            if 'vector' not in cmd:
+                raise ValueError("MVM command requires 'vector' field")
+            vector = cmd['vector']
+            if not isinstance(vector, list):
+                raise ValueError("Vector must be a list")
+            if len(vector) > MAX_MATRIX_SIZE:
+                raise ValueError(f"Vector too large: {len(vector)} > {MAX_MATRIX_SIZE}")
+
+        elif cmd['cmd'] == 'CONFIG':
+            if 'params' not in cmd:
+                raise ValueError("CONFIG command requires 'params' field")
+            if not isinstance(cmd['params'], dict):
+                raise ValueError("Config params must be a dictionary")
+
+        elif cmd['cmd'] == 'INIT':
+            if 'size' in cmd:
+                size = cmd['size']
+                if not isinstance(size, int) or size <= 0 or size > 256:
+                    raise ValueError(f"Invalid size parameter: {size}")
+
+        # Validate serialized size
+        try:
+            serialized = json.dumps(cmd)
+            if len(serialized) > MAX_RESPONSE_SIZE:
+                raise ValueError(f"Command too large: {len(serialized)} bytes")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Command cannot be serialized to JSON: {e}")
+
+    def _validate_response(self, response: Dict[str, Any]) -> None:
+        """
+        Validate response from hardware.
+
+        Args:
+            response: Response dictionary to validate
+
+        Raises:
+            ValueError: If response is invalid or malformed
+        """
+        if not isinstance(response, dict):
+            raise ValueError("Response must be a dictionary")
+
+        # Check for excessively large arrays in response
+        for key, value in response.items():
+            if isinstance(value, list):
+                if len(value) > MAX_MATRIX_SIZE:
+                    raise ValueError(f"Response field '{key}' too large: {len(value)}")
+                # Check nested lists (for matrices)
+                for item in value:
+                    if isinstance(item, list) and len(item) > MAX_MATRIX_SIZE:
+                        raise ValueError(f"Response matrix row too large: {len(item)}")
 
     def connect(self) -> bool:
         if not SERIAL_AVAILABLE:
@@ -123,10 +214,17 @@ class SerialProtocol(CommunicationProtocol):
         if not self.serial_conn or not self.serial_conn.is_open:
             raise RuntimeError("Serial connection not open")
 
-        message = json.dumps(cmd) + '\n'
-        self.serial_conn.write(message.encode('utf-8'))
-        self.serial_conn.flush()
-        return True
+        # Validate command before sending
+        self._validate_command(cmd)
+
+        try:
+            message = json.dumps(cmd) + '\n'
+            self.serial_conn.write(message.encode('utf-8'))
+            self.serial_conn.flush()
+            return True
+        except (TypeError, ValueError) as e:
+            self.logger.error(f"Failed to serialize command: {e}")
+            raise ValueError(f"Command serialization failed: {e}")
 
     def read_response(self) -> Optional[Dict[str, Any]]:
         if not self.serial_conn or not self.serial_conn.is_open:
@@ -135,10 +233,29 @@ class SerialProtocol(CommunicationProtocol):
         start_time = time.time()
         while time.time() - start_time < self.timeout:
             if self.serial_conn.in_waiting > 0:
-                line = self.serial_conn.readline().decode('utf-8').strip()
+                # Check size before reading to prevent memory exhaustion
+                if self.serial_conn.in_waiting > MAX_RESPONSE_SIZE:
+                    self.logger.error(f"Response too large: {self.serial_conn.in_waiting} bytes")
+                    raise ValueError(f"Response exceeds maximum size: {self.serial_conn.in_waiting} > {MAX_RESPONSE_SIZE}")
+
                 try:
-                    return json.loads(line)
-                except json.JSONDecodeError:
+                    line = self.serial_conn.readline().decode('utf-8').strip()
+
+                    # Additional size check on decoded string
+                    if len(line) > MAX_RESPONSE_SIZE:
+                        raise ValueError(f"Response line too large: {len(line)} bytes")
+
+                    response = json.loads(line)
+
+                    # Validate response structure
+                    self._validate_response(response)
+
+                    return response
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"Invalid JSON from device: {e}")
+                    continue
+                except UnicodeDecodeError as e:
+                    self.logger.warning(f"Invalid UTF-8 from device: {e}")
                     continue
             time.sleep(0.01)
 
@@ -241,8 +358,8 @@ class I2CProtocol(CommunicationProtocol):
                 self.connected = True
                 self.logger.info(f"Connected via I2C at address 0x{self.address:02X}")
                 return True
-            except:
-                self.logger.error(f"No device found at I2C address 0x{self.address:02X}")
+            except (OSError, IOError) as e:
+                self.logger.error(f"No device found at I2C address 0x{self.address:02X}: {e}")
                 return False
         except Exception as e:
             self.logger.error(f"Failed to connect via I2C: {e}")
@@ -289,7 +406,8 @@ class I2CProtocol(CommunicationProtocol):
                     if not block:
                         break
                     response_parts.append(bytes(block).decode('utf-8'))
-                except:
+                except (OSError, IOError) as e:
+                    self.logger.warning(f"I2C read block failed: {e}")
                     break
 
             response_str = ''.join(response_parts).strip('\x00')
@@ -300,6 +418,8 @@ class I2CProtocol(CommunicationProtocol):
             if json_match:
                 json_str = json_match.group()
                 return json.loads(json_str)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            self.logger.error(f"Failed to parse I2C response: {e}")
         except Exception as e:
             self.logger.error(f"Failed to read response via I2C: {e}")
 
@@ -474,14 +594,23 @@ class ArduinoRRAMInterface(HardwareInterface):
         self.protocol.send_command(cmd)
 
         response = self.protocol.read_response()
-        if response and 'matrix' in response:
-            matrix = np.array(response['matrix'])
-            # Add read noise
-            read_noise = np.random.normal(0, 0.005, matrix.shape)
-            return matrix + read_noise
-        else:
-            # Return default matrix if read failed
-            return np.eye(self.size)
+        if not response:
+            raise RuntimeError("No response from device when reading matrix")
+        if 'matrix' not in response:
+            raise RuntimeError(f"Invalid response format: missing 'matrix' field. Response: {response}")
+
+        matrix = np.array(response['matrix'])
+
+        # Validate matrix shape
+        if matrix.shape != (self.size, self.size):
+            raise ValueError(
+                f"Invalid matrix shape: expected ({self.size}, {self.size}), "
+                f"got {matrix.shape}"
+            )
+
+        # Add read noise
+        read_noise = np.random.normal(0, 0.005, matrix.shape)
+        return matrix + read_noise
 
     def matrix_vector_multiply(self, vector: np.ndarray) -> np.ndarray:
         """Perform hardware-accelerated matrix-vector multiplication."""

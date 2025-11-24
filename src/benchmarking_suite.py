@@ -301,12 +301,13 @@ class RRAMBenchmarkSuite:
             while time.time() - start_time < duration:
                 # Generate test matrix
                 G, b = self._generate_test_matrix(size, 'random')
-                
+
                 # Perform operation
                 try:
                     x, iters, info = hp_inv(G, b)
                     num_ops_rram += 1
-                except:
+                except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
+                    # Skip failed operations in power benchmark
                     continue
             
             actual_duration = time.time() - start_time
@@ -384,7 +385,8 @@ class RRAMBenchmarkSuite:
                 x_perturbed, _, _ = hp_inv(G_perturbed, b_perturbed)
                 deviation = np.linalg.norm(x_perturbed - x_init)
                 deviations.append(deviation)
-            except:
+            except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
+                # Record infinite deviation for failed perturbation tests
                 deviations.append(float('inf'))
         
         # Calculate stability metrics
@@ -433,12 +435,13 @@ class RRAMBenchmarkSuite:
             while time.time() - start_time < duration:
                 # Generate test problem
                 G, b = self._generate_test_matrix(size, 'random')
-                
+
                 # Attempt to solve
                 try:
                     x, iters, info = hp_inv(G, b)
                     num_completed_rram += 1
-                except:
+                except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
+                    # Skip failed operations in throughput benchmark
                     continue
             
             actual_duration = time.time() - start_time
@@ -461,12 +464,13 @@ class RRAMBenchmarkSuite:
                 while time.time() - start_time < duration:
                     # Generate test problem
                     G, b = self._generate_test_matrix(size, 'random')
-                    
+
                     # Attempt to solve digitally
                     try:
                         x = np.linalg.solve(G, b)
                         num_completed_digital += 1
-                    except:
+                    except (np.linalg.LinAlgError, ValueError) as e:
+                        # Skip failed operations in digital throughput benchmark
                         continue
                 
                 actual_duration = time.time() - start_time

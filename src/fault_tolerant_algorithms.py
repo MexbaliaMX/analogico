@@ -431,7 +431,8 @@ class FaultTolerantHPINV:
                 # Use pseudo-inverse as fallback
                 solution = np.linalg.lstsq(G, b, rcond=None)[0]
                 return solution
-            except:
+            except (np.linalg.LinAlgError, ValueError) as e:
+                warnings.warn(f"Failed to solve system with HP-INV and lstsq fallback: {e}")
                 return None
 
 

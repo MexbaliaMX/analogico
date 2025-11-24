@@ -915,7 +915,8 @@ class SystemValidator:
             b = np.ones(4)
             x, _, _ = hp_inv(G, b)
             validation['components_validated']['hp_inv_basic'] = True
-        except:
+        except (ValueError, RuntimeError, np.linalg.LinAlgError, TypeError) as e:
+            warnings.warn(f"HP-INV basic validation failed: {e}")
             validation['components_validated']['hp_inv_basic'] = False
             validation['recommendations'].append("Fix HP-INV basic functionality")
         

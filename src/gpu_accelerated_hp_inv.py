@@ -7,28 +7,43 @@ RRAM hardware.
 """
 import numpy as onp  # Use original numpy for fallback
 import warnings
+import threading
 from typing import Optional, Tuple, Dict, Any, Callable
 
+from .utils import validate_matrix_vector_inputs, validate_parameter
+
 # Defer JAX import to function level to avoid AVX issues during import
+# Thread safety: protect global mutable state with a lock
+_jax_lock = threading.Lock()
 JAX_AVAILABLE = None  # Will be set when import is attempted
 jnp = onp  # Default to numpy
 
 
 def gpu_available() -> bool:
-    """Check if GPU acceleration is available."""
+    """
+    Check if GPU acceleration is available.
+
+    This function is thread-safe and can be called from multiple threads.
+
+    Returns:
+        bool: True if JAX is available, False otherwise
+    """
     global JAX_AVAILABLE
-    if JAX_AVAILABLE is None:
-        try:
-            import jax
-            JAX_AVAILABLE = True
-        except (ImportError, RuntimeError):
-            JAX_AVAILABLE = False
-    return JAX_AVAILABLE
+    with _jax_lock:
+        if JAX_AVAILABLE is None:
+            try:
+                import jax
+                JAX_AVAILABLE = True
+            except (ImportError, RuntimeError):
+                JAX_AVAILABLE = False
+        return JAX_AVAILABLE
 
 
 def get_array_module(use_gpu: bool = True):
     """
     Get the appropriate array module (numpy or jax.numpy) based on availability.
+
+    This function is thread-safe and can be called from multiple threads.
 
     Args:
         use_gpu: Whether to try to use GPU acceleration
@@ -37,20 +52,21 @@ def get_array_module(use_gpu: bool = True):
         Array module (numpy or jax.numpy)
     """
     global JAX_AVAILABLE, jnp
-    if JAX_AVAILABLE is None:
-        try:
-            import jax
-            import jax.numpy as jnp_local
-            JAX_AVAILABLE = True
-            jnp = jnp_local
-        except (ImportError, RuntimeError):
-            JAX_AVAILABLE = False
-            jnp = onp  # Fallback to numpy
+    with _jax_lock:
+        if JAX_AVAILABLE is None:
+            try:
+                import jax
+                import jax.numpy as jnp_local
+                JAX_AVAILABLE = True
+                jnp = jnp_local
+            except (ImportError, RuntimeError):
+                JAX_AVAILABLE = False
+                jnp = onp  # Fallback to numpy
 
-    if use_gpu and JAX_AVAILABLE:
-        return jnp
-    else:
-        return onp
+        if use_gpu and JAX_AVAILABLE:
+            return jnp
+        else:
+            return onp
 
 
 def gpu_hp_inv(
@@ -78,20 +94,37 @@ def gpu_hp_inv(
 
     Returns:
         Tuple of (solution x, iterations taken, convergence info dict)
-    """
-    # Check JAX availability
-    global JAX_AVAILABLE
-    if JAX_AVAILABLE is None:
-        try:
-            import jax
-            import jax.numpy as jnp_local
-            from jax import jit as jit_local
-            from jax.scipy.linalg import inv as jax_inv_local
-            JAX_AVAILABLE = True
-        except (ImportError, RuntimeError):
-            JAX_AVAILABLE = False
 
-    if not JAX_AVAILABLE or not use_gpu:
+    Raises:
+        TypeError: If inputs are not correct types
+        ValueError: If matrix/vector dimensions or parameters are invalid
+    """
+    # Validate inputs
+    validate_matrix_vector_inputs(G, b, "gpu_hp_inv")
+    validate_parameter(bits, "bits", min_value=1, integer=True, func_name="gpu_hp_inv")
+    if bits > 32:
+        warnings.warn(f"bits={bits} is unusually high and may not provide benefits")
+    validate_parameter(lp_noise_std, "lp_noise_std", min_value=0, func_name="gpu_hp_inv")
+    validate_parameter(max_iter, "max_iter", min_value=1, integer=True, func_name="gpu_hp_inv")
+    validate_parameter(tol, "tol", min_value=0, func_name="gpu_hp_inv")
+    validate_parameter(relaxation_factor, "relaxation_factor", min_value=0, max_value=2, func_name="gpu_hp_inv")
+
+    # Check JAX availability (thread-safe)
+    global JAX_AVAILABLE
+    with _jax_lock:
+        if JAX_AVAILABLE is None:
+            try:
+                import jax
+                import jax.numpy as jnp_local
+                from jax import jit as jit_local
+                from jax.scipy.linalg import inv as jax_inv_local
+                JAX_AVAILABLE = True
+            except (ImportError, RuntimeError):
+                JAX_AVAILABLE = False
+
+        jax_available_local = JAX_AVAILABLE
+
+    if not jax_available_local or not use_gpu:
         # Fall back to CPU implementation
         return _cpu_hp_inv(G, b, bits, lp_noise_std, max_iter, tol, relaxation_factor)
 
@@ -173,7 +206,8 @@ def gpu_hp_inv(
     # Calculate condition number if matrix is invertible
     try:
         info['condition_number_estimate'] = onp.linalg.cond(G)
-    except:
+    except (onp.linalg.LinAlgError, ValueError) as e:
+        warnings.warn(f"Failed to compute condition number: {e}")
         info['condition_number_estimate'] = float('inf')
 
     return x_result, len(residuals), info
@@ -191,17 +225,7 @@ def _cpu_hp_inv(
     """
     CPU-only implementation of HP-INV for fallback when JAX is not available.
     """
-    def quantize(matrix, bits):
-        """Quantize matrix to given bit precision."""
-        if matrix.size == 0 or onp.all(matrix == 0):
-            return matrix
-        max_val = onp.max(onp.abs(matrix))
-        levels = 2**bits - 1
-        if max_val == 0:
-            return matrix
-        scale = levels / max_val
-        quantized = onp.round(matrix * scale) / scale
-        return quantized
+    from .utils import quantize
 
     # LP-INV: Quantize and invert with noise
     G_lp = quantize(G, bits)
@@ -243,7 +267,8 @@ def _cpu_hp_inv(
     # Calculate condition number if matrix is invertible
     try:
         info['condition_number_estimate'] = onp.linalg.cond(G)
-    except:
+    except (onp.linalg.LinAlgError, ValueError) as e:
+        warnings.warn(f"Failed to compute condition number: {e}")
         info['condition_number_estimate'] = float('inf')
 
     return x, k + 1, info
@@ -333,8 +358,9 @@ def gpu_block_hp_inv(
         try:
             G_block_inv = jax_inv(G_block)
             x_block = G_block_inv @ r_block
-        except:
+        except (Exception,) as e:
             # Use pseudoinverse if not invertible
+            warnings.warn(f"Block inversion failed, using pseudoinverse: {e}")
             G_block_inv = jnp_local.linalg.pinv(G_block)
             x_block = G_block_inv @ r_block
 

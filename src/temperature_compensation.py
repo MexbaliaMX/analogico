@@ -6,6 +6,7 @@ in RRAM conductance values, which is a critical reliability concern.
 """
 import numpy as np
 from typing import Tuple, Dict, Optional
+from collections import deque
 import warnings
 
 
@@ -95,19 +96,20 @@ def arrhenius_drift_model(conductance: np.ndarray,
 class TemperatureDriftCompensator:
     """
     A class that implements temperature drift compensation for RRAM devices.
-    
+
     This class combines multiple compensation techniques to maintain accuracy
-    under varying temperature conditions.
+    under varying temperature conditions. Uses bounded history buffers to prevent
+    memory leaks during long-term operation.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  temp_coeff: float = 0.002,
                  activation_energy: float = 0.5,
                  calibration_interval: float = 3600.0,  # 1 hour in seconds
                  temp_tolerance: float = 5.0):  # 5K temperature tolerance
         """
         Initialize the temperature drift compensator.
-        
+
         Args:
             temp_coeff: Temperature coefficient for instantaneous compensation
             activation_energy: Activation energy for time-dependent drift
@@ -118,13 +120,13 @@ class TemperatureDriftCompensator:
         self.activation_energy = activation_energy
         self.calibration_interval = calibration_interval
         self.temp_tolerance = temp_tolerance
-        
+
         # Track calibration status
         self.last_calibration_time = 0.0
         self.last_known_temp = 300.0  # Kelvin
         self.baseline_conductance = None
-        self.temperature_history = []
-        self.time_history = []
+        self.temperature_history = deque(maxlen=100)
+        self.time_history = deque(maxlen=100)
         
     def compensate_conductance(self, 
                               conductance: np.ndarray,
@@ -198,12 +200,10 @@ class TemperatureDriftCompensator:
             self.baseline_conductance = conductance.copy()
             self.last_calibration_time = current_time
             self.last_known_temp = current_temp
-            
-            # Also add to history for tracking
+
+            # Also add to history for tracking (automatically bounded by deque maxlen)
             self.temperature_history.append((current_time, current_temp))
-            if len(self.temperature_history) > 100:  # Keep only last 100 readings
-                self.temperature_history = self.temperature_history[-100:]
-            
+
             return conductance, True
         else:
             # Apply compensation based on history

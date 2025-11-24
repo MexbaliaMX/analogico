@@ -227,11 +227,12 @@ class GPUSimulationAccelerator:
         # Calculate condition number if matrix is invertible
         try:
             info['condition_number_estimate'] = np.linalg.cond(G)
-        except:
+        except (np.linalg.LinAlgError, ValueError, RuntimeError) as e:
+            warnings.warn(f"Failed to calculate condition number in JAX implementation: {e}")
             info['condition_number_estimate'] = float('inf')
 
         return x_result, len(residuals), info
-    
+
     def _gpu_hp_inv_cupy(self, 
                          G: np.ndarray, 
                          b: np.ndarray, 
@@ -307,11 +308,12 @@ class GPUSimulationAccelerator:
         # Calculate condition number if matrix is invertible
         try:
             info['condition_number_estimate'] = np.linalg.cond(G)
-        except:
+        except (np.linalg.LinAlgError, ValueError, RuntimeError) as e:
+            warnings.warn(f"Failed to calculate condition number in CuPy implementation: {e}")
             info['condition_number_estimate'] = float('inf')
 
         return x_result, len(residuals), info
-    
+
     def _gpu_hp_inv_torch(self, 
                           G: np.ndarray, 
                           b: np.ndarray, 
@@ -389,11 +391,12 @@ class GPUSimulationAccelerator:
         # Calculate condition number if matrix is invertible
         try:
             info['condition_number_estimate'] = np.linalg.cond(G)
-        except:
+        except (np.linalg.LinAlgError, ValueError, RuntimeError) as e:
+            warnings.warn(f"Failed to calculate condition number in PyTorch implementation: {e}")
             info['condition_number_estimate'] = float('inf')
 
         return x_result, len(residuals), info
-    
+
     def gpu_material_simulation(self, 
                                 material_type: str, 
                                 num_devices: int = 1000,

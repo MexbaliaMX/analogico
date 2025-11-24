@@ -596,7 +596,8 @@ class RRAMPipelineManager:
         if len(test_inputs) > 0:
             try:
                 _ = self.deployer.execute_model(model_id, test_inputs[0], use_hardware)
-            except:
+            except (RuntimeError, ValueError, KeyError, AttributeError) as e:
+                warnings.warn(f"Warm-up run failed: {e}")
                 pass  # Ignore warm-up errors
         
         # Benchmark timing
@@ -833,7 +834,8 @@ def benchmark_rram_vs_digital(model: Any,
         for inp in test_inputs:
             try:
                 _ = hardware_interface.matrix_vector_multiply(inp)
-            except:
+            except (AttributeError, RuntimeError, IOError, ValueError) as e:
+                warnings.warn(f"Hardware matrix-vector multiply failed: {e}")
                 # Fallback to basic matrix multiply if MVM not available
                 _ = inp  # Placeholder
         rram_time = time.time() - start_time

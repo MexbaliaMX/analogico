@@ -6,8 +6,11 @@ import os
 # Add the project root to path for potential optimization modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from .utils import validate_matrix_vector_inputs, validate_parameter, quantize
+
+
 def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.01,
-           max_iter: int = 10, tol: float = 1e-6, 
+           max_iter: int = 10, tol: float = 1e-6,
            relaxation_factor: float = 1.0) -> Tuple[np.ndarray, int, dict]:
     """
     Simulate HP-INV iterative refinement for solving G x = b with advanced convergence options.
@@ -24,24 +27,18 @@ def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.
     Returns:
         Tuple of (solution x, iterations taken, convergence info dict)
     """
-    def quantize(matrix: np.ndarray, bits: int) -> np.ndarray:
-        """Quantize matrix to given bit precision."""
-        if matrix.size == 0 or np.all(matrix == 0):
-            return matrix
-        max_val = np.max(np.abs(matrix))
-        levels = 2**bits - 1
-        if max_val == 0:
-            return matrix
-        scale = levels / max_val
-        # Avoid potential numerical issues if scale is too small
-        if scale < 1e-12:  # Very small scale could cause numerical issues
-            return np.zeros_like(matrix)
-        quantized = np.round(matrix * scale) / scale
-        return quantized
+
+    # Validate inputs
+    validate_matrix_vector_inputs(G, b, "hp_inv")
+    validate_parameter(bits, "bits", min_value=1, integer=True, func_name="hp_inv")
+    validate_parameter(lp_noise_std, "lp_noise_std", min_value=0, func_name="hp_inv")
+    validate_parameter(max_iter, "max_iter", min_value=1, integer=True, func_name="hp_inv")
+    validate_parameter(tol, "tol", min_value=0, func_name="hp_inv")
+    validate_parameter(relaxation_factor, "relaxation_factor", min_value=0, max_value=2, func_name="hp_inv")
 
     # LP-INV: Quantize and invert with noise
     G_lp = quantize(G, bits)
-    
+
     try:
         G_lp_inv = np.linalg.inv(G_lp)
         noise = np.random.normal(0, lp_noise_std, G_lp_inv.shape)
@@ -53,18 +50,18 @@ def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.
 
     x = np.zeros_like(b, dtype=float)
     residuals = []
-    
+
     for k in range(max_iter):
         # HP-MVM: Compute residual r = b - G x
         Ax = G @ x
         r = b - Ax
         residual_norm = np.linalg.norm(r)
         residuals.append(residual_norm)
-        
+
         # Update x with relaxation factor
         delta = A0_inv @ r
         x += relaxation_factor * delta
-        
+
         # Check convergence
         if residual_norm < tol:
             break
@@ -79,7 +76,8 @@ def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.
     # Calculate condition number if matrix is invertible
     try:
         info['condition_number_estimate'] = np.linalg.cond(G)
-    except:
+    except (np.linalg.LinAlgError, ValueError) as e:
+        warnings.warn(f"Failed to compute condition number: {e}")
         info['condition_number_estimate'] = float('inf')
     
     return x, k + 1, info
@@ -91,16 +89,24 @@ def block_hp_inv(G: np.ndarray, b: np.ndarray, block_size: int = 4, **kwargs) ->
     This implementation uses a more sophisticated approach based on BlockAMC principles:
     1. Partition large matrices into submatrices that fit existing RRAM tiles
     2. Enable 16x16 real-valued inversions using 8x8 arrays without reprogramming
-    
+
     Args:
         G: Large conductance matrix to invert
         b: Right-hand side vector
         block_size: Size of submatrix blocks (physical RRAM tile size)
         **kwargs: Additional arguments passed to hp_inv
-        
+
     Returns:
         Tuple of (solution x, iterations taken, convergence info)
+
+    Raises:
+        TypeError: If inputs are not numpy arrays
+        ValueError: If matrix/vector dimensions are invalid
     """
+    # Validate inputs
+    validate_matrix_vector_inputs(G, b, "block_hp_inv")
+    validate_parameter(block_size, "block_size", min_value=1, integer=True, func_name="block_hp_inv")
+
     n = G.shape[0]
     if n <= block_size:
         # Matrix is small enough, use standard HP-INV
@@ -160,21 +166,29 @@ def block_hp_inv(G: np.ndarray, b: np.ndarray, block_size: int = 4, **kwargs) ->
 def blockamc_inversion(G: np.ndarray, block_size: int = 8) -> np.ndarray:
     """
     Implement the full BlockAMC algorithm for matrix inversion.
-    
+
     The BlockAMC algorithm partitions large matrices into block submatrices:
     1. Stage 1: solves Re(A) via LP-INV and Im(A) via MVM
     2. Stage 2: recursively inverts block diagonals
-    
-    For real-valued matrices, this simplifies to block-wise processing without 
+
+    For real-valued matrices, this simplifies to block-wise processing without
     complex number handling, but maintains the recursive structure.
-    
+
     Args:
         G: Large matrix to invert
         block_size: Size of physical RRAM tiles (default 8 for 8x8 arrays)
-        
+
     Returns:
         Inverted matrix
+
+    Raises:
+        TypeError: If inputs are not correct types
+        ValueError: If matrix dimensions or parameters are invalid
     """
+    # Validate inputs
+    validate_matrix_inputs(G, allow_empty=False, func_name="blockamc_inversion")
+    validate_parameter(block_size, "block_size", min_value=1, integer=True, func_name="blockamc_inversion")
+
     n = G.shape[0]
     
     if n <= block_size:
@@ -236,16 +250,28 @@ def recursive_block_inversion(G: np.ndarray, block_size: int = 8, depth: int = 0
     """
     A recursive implementation of block matrix inversion based on BlockAMC principles.
     This function performs recursive block Gaussian elimination.
-    
+
     Args:
         G: Matrix to invert
         block_size: Base tile size for physical RRAM arrays
         depth: Current recursion depth
         max_depth: Maximum recursion depth to prevent infinite recursion
-        
+
     Returns:
         Inverted matrix
+
+    Raises:
+        TypeError: If inputs are not correct types (validated on first call only)
+        ValueError: If matrix dimensions or parameters are invalid (validated on first call only)
     """
+    # Validate only on first call to avoid overhead in recursion
+    if depth == 0:
+        # Validate inputs
+        validate_matrix_inputs(G, allow_empty=False, func_name="recursive_block_inversion")
+        validate_parameter(block_size, "block_size", min_value=1, integer=True, func_name="recursive_block_inversion")
+        validate_parameter(depth, "depth", min_value=0, integer=True, func_name="recursive_block_inversion")
+        validate_parameter(max_depth, "max_depth", min_value=0, integer=True, func_name="recursive_block_inversion")
+
     n = G.shape[0]
     
     # Base case: if matrix fits in a single block, return direct inverse

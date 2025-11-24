@@ -10,6 +10,7 @@ This module implements performance optimization enhancements including:
 """
 import numpy as np
 import multiprocessing as mp
+import threading
 from typing import Tuple, Optional, Callable, Any
 import time
 import warnings
@@ -18,6 +19,8 @@ import sys
 import os
 
 # Performance libraries will be imported at function level to avoid AVX issues
+# Thread safety: protect global mutable state with a lock
+_perf_lock = threading.Lock()
 JAX_AVAILABLE = None  # Will be set when import is attempted
 NUMBA_AVAILABLE = None  # Will be set when import is attempted
 
@@ -36,29 +39,33 @@ class PerformanceOptimizer:
             use_numba: Whether to use Numba for CPU JIT compilation
             n_cores: Number of CPU cores to use (default: all available)
         """
-        # Check JAX availability
+        # Check JAX and Numba availability (thread-safe)
         global JAX_AVAILABLE, NUMBA_AVAILABLE
 
-        if JAX_AVAILABLE is None:
-            try:
-                import jax
-                JAX_AVAILABLE = True
-            except (ImportError, RuntimeError):
-                JAX_AVAILABLE = False
-                if use_jax:
-                    warnings.warn("JAX not available, GPU acceleration disabled")
+        with _perf_lock:
+            if JAX_AVAILABLE is None:
+                try:
+                    import jax
+                    JAX_AVAILABLE = True
+                except (ImportError, RuntimeError):
+                    JAX_AVAILABLE = False
+                    if use_jax:
+                        warnings.warn("JAX not available, GPU acceleration disabled")
 
-        if NUMBA_AVAILABLE is None:
-            try:
-                from numba import jit as numba_jit
-                NUMBA_AVAILABLE = True
-            except ImportError:
-                NUMBA_AVAILABLE = False
-                if use_numba:
-                    warnings.warn("Numba not available, CPU JIT optimization disabled")
+            if NUMBA_AVAILABLE is None:
+                try:
+                    from numba import jit as numba_jit
+                    NUMBA_AVAILABLE = True
+                except ImportError:
+                    NUMBA_AVAILABLE = False
+                    if use_numba:
+                        warnings.warn("Numba not available, CPU JIT optimization disabled")
 
-        self.use_jax = use_jax and JAX_AVAILABLE
-        self.use_numba = use_numba and NUMBA_AVAILABLE
+            jax_available_local = JAX_AVAILABLE
+            numba_available_local = NUMBA_AVAILABLE
+
+        self.use_jax = use_jax and jax_available_local
+        self.use_numba = use_numba and numba_available_local
         self.n_cores = n_cores or mp.cpu_count()
 
         # Set JAX to use GPU if available
@@ -66,8 +73,10 @@ class PerformanceOptimizer:
             try:
                 import jax
                 jax.config.update('jax_enable_x64', True)  # Enable 64-bit precision
-            except:
-                pass  # May already be set
+            except (AttributeError, RuntimeError, ValueError) as e:
+                # Config may already be set or not available
+                import warnings
+                warnings.warn(f"Could not set JAX config: {e}")
     
     def optimize_rram_model(self):
         """Optimize RRAM model functions for performance."""
@@ -301,8 +310,10 @@ def jax_hp_inv(G, b, bits: int = 3, lp_noise_std: float = 0.01,
         G_lp_inv = jnp.linalg.inv(G_lp)
         noise = jax.random.normal(jax.random.PRNGKey(42), G_lp_inv.shape) * lp_noise_std
         A0_inv = G_lp_inv + noise
-    except:
+    except (Exception,) as e:
         # Singular matrix, return zero correction
+        import warnings
+        warnings.warn(f"Matrix inversion failed, using zero approximation: {e}")
         A0_inv = jnp.zeros_like(G_lp)
 
     def body_fun(carry):

@@ -33,6 +33,9 @@ The algorithm decomposes matrix A into 3-bit slices (A = Σ 2^{im} A_i), with th
 - Iterative refinement with configurable precision and noise parameters
 - Multi-backend GPU acceleration (JAX, CuPy, PyTorch) with CPU fallbacks
 - Deferred JAX imports to handle AVX compatibility issues
+- Consolidated utility functions for common operations like validation and quantization
+- Improved code maintainability through reduced duplication
+- Enhanced test coverage for critical components
 
 ## Technical Stack
 - Python >=3.9, <3.14
@@ -141,6 +144,8 @@ The project has been thoroughly tested with the following procedures:
 - Use `poetry install` for setup
 - `poetry run pytest` for testing (with CPU-only fallback tests)
 - `poetry run invoke lint` for code quality checks
+- Use consolidated utilities in `src/utils.py` for common operations like validation and quantization
+- Import from the `src.utils` module when implementing similar functionality across modules
 
 ## Research Context
 This project implements the algorithms described in research on high-precision analogue matrix inversion using RRAM technology, addressing the precision bottleneck of classical analogue computing while maintaining its speed and energy efficiency advantages.

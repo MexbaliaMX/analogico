@@ -498,7 +498,8 @@ class RRAMVisualizer:
                             avg_conductance = np.mean(matrix) if matrix.size > 0 else 0
                         else:
                             avg_conductance = np.random.random() * 1e-4  # Simulated value
-                    except:
+                    except (AttributeError, IOError, RuntimeError, ValueError) as e:
+                        warnings.warn(f"Failed to read RRAM matrix: {e}")
                         avg_conductance = np.random.random() * 1e-4  # Default to random if error
                 else:
                     # Simulate conductance changes for demonstration

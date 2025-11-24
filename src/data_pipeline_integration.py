@@ -933,7 +933,8 @@ class RRAMDataPipelineIntegration:
                     'hardware_connected': getattr(self.rram_interface, 'connected', False),
                     'last_operation_time': getattr(self.rram_interface, 'last_operation_time', 0)
                 }
-            except:
+            except (AttributeError, RuntimeError, IOError) as e:
+                warnings.warn(f"Failed to collect RRAM metrics from interface: {e}")
                 pass
         
         return benchmark_results

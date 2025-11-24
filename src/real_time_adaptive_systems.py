@@ -1,8 +1,8 @@
 """
 Real-time Adaptive Systems for RRAM.
 
-This module provides systems that can dynamically adjust their parameters 
-during operation based on changing conditions, temperature, or aging of 
+This module provides systems that can dynamically adjust their parameters
+during operation based on changing conditions, temperature, or aging of
 the RRAM devices. These systems continuously monitor and adapt to maintain
 optimal performance despite environmental changes and device degradation.
 """
@@ -13,6 +13,7 @@ import queue
 import warnings
 from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 from dataclasses import dataclass
+from collections import deque
 from enum import Enum
 import json
 from datetime import datetime
@@ -119,15 +120,16 @@ class EnvironmentSensor:
 class ParameterAdaptationController:
     """
     Controller for adapting RRAM parameters based on environmental
-    conditions and performance metrics.
+    conditions and performance metrics. Uses bounded history to prevent
+    memory leaks during long-term operation.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  initial_settings: Dict[AdaptiveParameter, float],
                  adaptation_rates: Optional[Dict[AdaptiveParameter, float]] = None):
         """
         Initialize the parameter adaptation controller.
-        
+
         Args:
             initial_settings: Initial parameter values
             adaptation_rates: Rates of adaptation for each parameter
@@ -142,7 +144,7 @@ class ParameterAdaptationController:
             AdaptiveParameter.VOLTAGE_BIAS: 0.005,
             AdaptiveParameter.TIMESTEP: 0.001
         }
-        self.adaptation_history = []
+        self.adaptation_history = deque(maxlen=500)
         self.lock = threading.Lock()
     
     def update_parameter(self, 
@@ -165,8 +167,8 @@ class ParameterAdaptationController:
                 # Apply constraints based on parameter type
                 constrained_value = self._apply_parameter_constraints(param, new_value)
                 self.current_settings[param] = constrained_value
-                
-                # Log the update
+
+                # Log the update (automatically bounded by deque maxlen)
                 self.adaptation_history.append({
                     'timestamp': time.time(),
                     'parameter': param.value,
@@ -175,11 +177,7 @@ class ParameterAdaptationController:
                     'reason': reason,
                     'delta': constrained_value - self.current_settings[param]
                 })
-                
-                # Limit history size
-                if len(self.adaptation_history) > 1000:
-                    self.adaptation_history = self.adaptation_history[-500:]
-                
+
                 return True
             except Exception as e:
                 print(f"Error updating parameter {param}: {e}")
@@ -283,15 +281,16 @@ class ParameterAdaptationController:
 class RealTimeAdaptiveSystem:
     """
     Real-time adaptive system that monitors and adjusts RRAM parameters.
+    Uses bounded history buffers to prevent memory leaks during long-term operation.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  rram_interface: Optional[object] = None,
                  mode: AdaptiveSystemMode = AdaptiveSystemMode.AUTO_ADJUST,
                  adaptation_frequency: float = 1.0):
         """
         Initialize the real-time adaptive system.
-        
+
         Args:
             rram_interface: Optional RRAM interface for hardware feedback
             mode: Operating mode for the adaptive system
@@ -301,7 +300,7 @@ class RealTimeAdaptiveSystem:
         self.mode = mode
         self.adaptation_frequency = adaptation_frequency
         self.environment_sensor = EnvironmentSensor()
-        
+
         # Initialize parameter controller
         initial_settings = {
             AdaptiveParameter.PRECISION_BITS: 4.0,
@@ -312,13 +311,13 @@ class RealTimeAdaptiveSystem:
             AdaptiveParameter.VOLTAGE_BIAS: 0.0,
             AdaptiveParameter.TIMESTEP: 1e-6
         }
-        
+
         self.param_controller = ParameterAdaptationController(initial_settings)
-        
-        self.performance_history = []
+
+        self.performance_history = deque(maxlen=100)
         self.system_running = False
         self.adaptation_thread = None
-        
+
         # Performance metrics
         self.metrics = {
             'residual_norm': 1.0,
@@ -407,8 +406,8 @@ class RealTimeAdaptiveSystem:
         
         # Apply suggested adaptations (similar to regular adaptation but with learning)
         self._apply_adaptations(suggestions)
-        
-        # Update learning history
+
+        # Update learning history (automatically bounded by deque maxlen)
         self.performance_history.append({
             'timestamp': time.time(),
             'settings_before': current_settings,
@@ -417,10 +416,6 @@ class RealTimeAdaptiveSystem:
             'performance_before': current_performance,
             'performance_after': self.metrics.copy()
         })
-        
-        # Limit history size
-        if len(self.performance_history) > 100:
-            self.performance_history = self.performance_history[-50:]
     
     def update_performance_metrics(self, 
                                   residual_norm: Optional[float] = None,

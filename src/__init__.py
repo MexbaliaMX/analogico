@@ -9,6 +9,7 @@ from . import hardware_interface
 from . import temperature_compensation
 from . import benchmark
 from . import advanced_materials_simulation
+from . import utils
 
 __all__ = [
     'hp_inv',
@@ -20,5 +21,6 @@ __all__ = [
     'hardware_interface',
     'temperature_compensation',
     'benchmark',
-    'advanced_materials_simulation'
+    'advanced_materials_simulation',
+    'utils'
 ]
