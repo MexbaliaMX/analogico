@@ -15,7 +15,7 @@ Analogico is a Python project focused on analogue computing algorithms for High-
 ## Key Features
 
 - **High-Precision Inversion (HP-INV)**: Enhanced iterative refinement algorithm with relaxation factors and convergence monitoring
-- **Block HP-INV**: Scalability algorithm for large matrices using BlockAMC approach
+- **Block HP-INV**: Scalability algorithm for large matrices using a recursive BlockAMC approach for robust preconditioning.
 - **RRAM Modeling**: Comprehensive RRAM models with discrete conductance levels, variability, stuck faults, and line resistance effects
 - **GPU Acceleration**: Support for JAX, CuPy, and PyTorch backends (with CPU fallbacks)
 - **Fault Tolerance**: Redundancy scheme for handling RRAM device failures
@@ -83,6 +83,15 @@ solution, iterations, info = hp_inv(G, b, max_iter=15, bits=4)
 print(f'Solution converged in {iterations} iterations with residual {info["final_residual"]}')
 ```
 
+### Block HP-INV Solution (for large matrices)
+```python
+from src.hp_inv import block_hp_inv
+
+# Solve using Block HP-INV which partitions the problem
+solution, iterations, info = block_hp_inv(G, b, block_size=8, max_iter=15)
+print(f'Block solution converged in {iterations} iterations')
+```
+
 ### Using GPU-Accelerated Solver (with CPU fallback)
 ```python
 from src.gpu_accelerated_hp_inv import GPUAcceleratedHPINV
@@ -99,7 +108,7 @@ print(f'Solution computed with {iterations} iterations')
 
 ### Core Components:
 
-- `hp_inv.py`: Main HP-INV iterative refinement algorithm implementation
+- `hp_inv.py`: Main HP-INV iterative refinement algorithm implementation. Includes `block_hp_inv` and `blockamc_inversion` (recursive).
 - `rram_model.py`: RRAM conductance matrix generation with discrete levels, variability, stuck faults, and line resistance effects
 - `gpu_accelerated_hp_inv.py`: GPU implementations with CPU fallbacks
 - `performance_optimization.py`: Multi-backend performance optimization with deferred imports
@@ -107,7 +116,7 @@ print(f'Solution computed with {iterations} iterations')
 ### Algorithms Implemented:
 
 1. **HP-INV Solver**: Enhanced iterative refinement loop with relaxation factors and convergence monitoring
-2. **Block HP-INV**: Scalability algorithm for large matrices using BlockAMC approach (current implementation shows areas for improvement in accuracy)
+2. **Block HP-INV**: Scalability algorithm that uses a recursive BlockAMC approach to compute a robust preconditioner for HP-INV.
 3. **RRAM Model**: Stochastic RRAM models with device variability, stuck faults, line resistance, temperature effects and time-dependent drift
 4. **GPU Acceleration**: Multi-backend support with JAX, CuPy, PyTorch and CPU fallbacks
 
@@ -119,8 +128,16 @@ The project includes comprehensive testing at multiple levels:
 - **Integration tests**: For system-level validation
 - **End-to-End tests**: Comprehensive validation with `comprehensive_end_to_end_test.py`
 - **GPU validation**: Specialized tests for GPU acceleration with CPU fallbacks
-- **Property-based tests**: Using hypothesis for robust validation
+- **Property-based tests**: Using hypothesis for robust validation of algorithmic properties
 - **Stress tests**: Monte Carlo tests for reliability evaluation
+
+## Benchmarking
+
+To benchmark the performance against standard NumPy implementations:
+
+```bash
+poetry run invoke bench
+```
 
 ## Algorithm Selection Guidelines
 
@@ -128,8 +145,7 @@ Based on testing results:
 
 - **HP-INV Solver**: Recommended for most applications, provides good accuracy and convergence
 - **Adaptive HP-INV**: Best for problems with variable precision requirements
-- **Recursive Block Inversion**: Good for large matrices when block algorithms are preferred
-- **Block HP-INV & BlockAMC**: Available but current implementations may show reduced accuracy; suitable for experimental use or when accuracy requirements are less stringent
+- **Block HP-INV & BlockAMC**: Recommended for matrices larger than physical array sizes. Now uses recursive inversion for improved accuracy.
 
 ## Performance
 
