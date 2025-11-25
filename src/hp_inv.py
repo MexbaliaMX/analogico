@@ -6,12 +6,13 @@ import os
 # Add the project root to path for potential optimization modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from .utils import validate_matrix_vector_inputs, validate_parameter, quantize
+from .utils import validate_matrix_vector_inputs, validate_parameter, quantize, validate_matrix_inputs
 
 
 def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.01,
            max_iter: int = 10, tol: float = 1e-6,
-           relaxation_factor: float = 1.0) -> Tuple[np.ndarray, int, dict]:
+           relaxation_factor: float = 1.0,
+           precomputed_inv: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int, dict]:
     """
     Simulate HP-INV iterative refinement for solving G x = b with advanced convergence options.
 
@@ -23,6 +24,8 @@ def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.
         max_iter: Maximum iterations
         tol: Tolerance for convergence
         relaxation_factor: Relaxation factor for convergence acceleration (0 < factor <= 2)
+        precomputed_inv: Optional precomputed approximate inverse (A0_inv) to use. 
+                         If provided, bits and lp_noise_std are ignored for A0_inv creation.
 
     Returns:
         Tuple of (solution x, iterations taken, convergence info dict)
@@ -36,17 +39,24 @@ def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.
     validate_parameter(tol, "tol", min_value=0, func_name="hp_inv")
     validate_parameter(relaxation_factor, "relaxation_factor", min_value=0, max_value=2, func_name="hp_inv")
 
-    # LP-INV: Quantize and invert with noise
-    G_lp = quantize(G, bits)
+    if precomputed_inv is not None:
+        # Use the provided approximate inverse
+        validate_matrix_inputs(precomputed_inv, allow_empty=False, func_name="hp_inv (precomputed_inv)")
+        if precomputed_inv.shape != G.shape:
+            raise ValueError(f"precomputed_inv shape {precomputed_inv.shape} must match G shape {G.shape}")
+        A0_inv = precomputed_inv
+    else:
+        # LP-INV: Quantize and invert with noise
+        G_lp = quantize(G, bits)
 
-    try:
-        G_lp_inv = np.linalg.inv(G_lp)
-        noise = np.random.normal(0, lp_noise_std, G_lp_inv.shape)
-        A0_inv = G_lp_inv + noise
-    except np.linalg.LinAlgError:
-        # Singular matrix, return zero correction
-        A0_inv = np.zeros_like(G_lp)
-        warnings.warn("Matrix is singular, using zero inverse approximation")
+        try:
+            G_lp_inv = np.linalg.inv(G_lp)
+            noise = np.random.normal(0, lp_noise_std, G_lp_inv.shape)
+            A0_inv = G_lp_inv + noise
+        except np.linalg.LinAlgError:
+            # Singular matrix, return zero correction
+            A0_inv = np.zeros_like(G_lp)
+            warnings.warn("Matrix is singular, using zero inverse approximation")
 
     x = np.zeros_like(b, dtype=float)
     residuals = []
@@ -86,9 +96,10 @@ def hp_inv(G: np.ndarray, b: np.ndarray, bits: int = 3, lp_noise_std: float = 0.
 def block_hp_inv(G: np.ndarray, b: np.ndarray, block_size: int = 4, **kwargs) -> Tuple[np.ndarray, int, dict]:
     """
     Block HP-INV implementation for large matrices using BlockAMC algorithm.
-    This implementation uses a more sophisticated approach based on BlockAMC principles:
-    1. Partition large matrices into submatrices that fit existing RRAM tiles
-    2. Enable 16x16 real-valued inversions using 8x8 arrays without reprogramming
+    
+    This implementation uses the BlockAMC algorithm (recursive block inversion) to compute 
+    a high-quality approximate inverse, which is then used as the preconditioner 
+    in the HP-INV iterative refinement loop.
 
     Args:
         G: Large conductance matrix to invert
@@ -112,68 +123,36 @@ def block_hp_inv(G: np.ndarray, b: np.ndarray, block_size: int = 4, **kwargs) ->
         # Matrix is small enough, use standard HP-INV
         return hp_inv(G, b, **kwargs)
     
-    # Partition the matrix into blocks
-    n_blocks = int(np.ceil(n / block_size))
-    x = np.zeros_like(b, dtype=float)
-    residuals = []
+    # 1. Quantize G to simulate the hardware low-precision view
+    bits = kwargs.get('bits', 3)
+    G_lp = quantize(G, bits)
     
-    # Initialize using block approach
-    for k in range(kwargs.get('max_iter', 10)):
-        # Compute residual
-        r = b - G @ x
-        residual_norm = np.linalg.norm(r)
-        residuals.append(residual_norm)
+    # 2. Compute the approximate inverse using the BlockAMC (recursive) method
+    # This handles large matrices by breaking them down recursively
+    try:
+        A0_inv = recursive_block_inversion(G_lp, block_size=block_size)
         
-        # Process in blocks to simulate the tile-based approach
-        x_new = x.copy()
-        for i in range(0, n, block_size):
-            end_i = min(i + block_size, n)
-            row_indices = slice(i, end_i)
+        # Add noise to the inverse if requested (simulating analog noise in the inversion step)
+        lp_noise_std = kwargs.get('lp_noise_std', 0.01)
+        if lp_noise_std > 0:
+            noise = np.random.normal(0, lp_noise_std, A0_inv.shape)
+            A0_inv += noise
             
-            # Extract the block of G
-            G_block = G[row_indices, row_indices]
-            
-            # Get the corresponding part of residual
-            r_block = r[row_indices]
-            
-            # Solve for this block using HP-INV
-            if G_block.shape[0] == G_block.shape[1]:  # Make sure it's square
-                x_block, _, _ = hp_inv(G_block, r_block, **{k: v for k, v in kwargs.items() if k != 'max_iter'})
-                
-                # Update the solution for this block
-                x_new[row_indices] += kwargs.get('relaxation_factor', 1.0) * x_block
-            else:
-                # For non-square blocks (at the end if matrix size not divisible by block_size)
-                # We'll use least squares approach
-                x_block = np.linalg.lstsq(G_block, r_block, rcond=None)[0]
-                x_new[row_indices] += kwargs.get('relaxation_factor', 1.0) * x_block
-        
-        x = x_new
-        
-        # Check for convergence
-        if residual_norm < kwargs.get('tol', 1e-6):
-            break
-    
-    info = {
-        'residuals': residuals,
-        'final_residual': residuals[-1] if residuals else 0,
-        'converged': residuals[-1] < kwargs.get('tol', 1e-6) if residuals else False,
-    }
-    
-    return x, len(residuals), info
+    except np.linalg.LinAlgError:
+        warnings.warn("Block inversion failed (singular), falling back to zero inverse.")
+        A0_inv = np.zeros_like(G)
+
+    # 3. Run the standard HP-INV refinement using this block-derived preconditioner
+    # We pass 'precomputed_inv' to skip the internal inversion in hp_inv
+    return hp_inv(G, b, precomputed_inv=A0_inv, **kwargs)
 
 
 def blockamc_inversion(G: np.ndarray, block_size: int = 8) -> np.ndarray:
     """
     Implement the full BlockAMC algorithm for matrix inversion.
-
-    The BlockAMC algorithm partitions large matrices into block submatrices:
-    1. Stage 1: solves Re(A) via LP-INV and Im(A) via MVM
-    2. Stage 2: recursively inverts block diagonals
-
-    For real-valued matrices, this simplifies to block-wise processing without
-    complex number handling, but maintains the recursive structure.
-
+    
+    This acts as a wrapper around the robust recursive_block_inversion implementation.
+    
     Args:
         G: Large matrix to invert
         block_size: Size of physical RRAM tiles (default 8 for 8x8 arrays)
@@ -189,61 +168,7 @@ def blockamc_inversion(G: np.ndarray, block_size: int = 8) -> np.ndarray:
     validate_matrix_inputs(G, allow_empty=False, func_name="blockamc_inversion")
     validate_parameter(block_size, "block_size", min_value=1, integer=True, func_name="blockamc_inversion")
 
-    n = G.shape[0]
-    
-    if n <= block_size:
-        # Matrix fits in a single tile, use direct inversion
-        try:
-            return np.linalg.inv(G)
-        except np.linalg.LinAlgError:
-            # If not invertible, return pseudoinverse
-            return np.linalg.pinv(G)
-    
-    # Partition matrix into blocks
-    n_blocks = int(np.ceil(n / block_size))
-    
-    # Pad matrix if needed to make it evenly divisible
-    if n % block_size != 0:
-        pad_size = ((n // block_size) + 1) * block_size - n
-        G_padded = np.pad(G, ((0, pad_size), (0, pad_size)), mode='constant')
-        n_padded = G_padded.shape[0]
-    else:
-        G_padded = G.copy()
-        n_padded = n
-    
-    # Create the result matrix
-    G_inv_padded = np.zeros_like(G_padded)
-    
-    # Extract block size for local use
-    bs = block_size
-    
-    # Stage 1: Process diagonal blocks using LP-INV approach
-    for i in range(0, n_padded, bs):
-        for j in range(0, n_padded, bs):
-            # Get the current block
-            row_slice = slice(i, min(i + bs, n_padded))
-            col_slice = slice(j, min(j + bs, n_padded))
-            
-            G_block = G_padded[row_slice, col_slice]
-            
-            if i == j:  # Diagonal block - invert it
-                try:
-                    G_inv_block = np.linalg.inv(G_block)
-                except np.linalg.LinAlgError:
-                    # Use pseudoinverse if not invertible
-                    G_inv_block = np.linalg.pinv(G_block)
-                
-                G_inv_padded[row_slice, col_slice] = G_inv_block
-            else:  # Off-diagonal block - for now, we'll leave as zero for simplicity
-                # In a more sophisticated implementation, this would involve 
-                # interactions between blocks based on the recursive structure
-                G_inv_padded[row_slice, col_slice] = np.zeros_like(G_block)
-    
-    # If we had to pad, return only the original part
-    if n != n_padded:
-        return G_inv_padded[:n, :n]
-    else:
-        return G_inv_padded
+    return recursive_block_inversion(G, block_size=block_size)
 
 
 def recursive_block_inversion(G: np.ndarray, block_size: int = 8, depth: int = 0, max_depth: int = 3) -> np.ndarray:

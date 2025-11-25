@@ -6,8 +6,7 @@ def lint(c):
     c.run("ruff check src tests")
     c.run("mypy src tests")
 
-@task
-def bench(c):
+@task(help={'type': "Type of benchmark to run (comprehensive, scalability, rram_effects, hp_inv_vs_numpy)"})
+def bench(c, type="comprehensive"):
     """Reproduce analogue-versus-digital benchmarking plots."""
-    # Placeholder: implement benchmarking logic here
-    c.run("python -c 'print(\"Benchmarking not yet implemented\")'")
+    c.run(f"python benchmark_runner.py --type {type}")

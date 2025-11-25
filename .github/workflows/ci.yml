@@ -36,6 +36,9 @@ jobs:
       - name: Run pytest with coverage
         run: poetry run pytest --cov=src --cov-report=xml
 
+      - name: Run comprehensive end-to-end validation
+        run: poetry run python comprehensive_end_to_end_test.py
+
       - name: Lint and type check
         run: poetry run invoke lint
 
